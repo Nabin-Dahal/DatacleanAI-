@@ -3,6 +3,9 @@ import { View, StyleSheet, Dimensions } from 'react-native';
 import { MotiView, MotiText } from 'moti'; // Moti for simple, powerful animations
 import { useAppTheme } from '../../constants/useAppTheme'; // Our custom theme hook
 import Logo from '../../components/logo'; // The SVG Logo component we made
+import { useEffect } from 'react';
+import { useRouter } from 'expo-router';
+
 
 // Get screen width to make the logo responsive
 const { width } = Dimensions.get('window');
@@ -10,6 +13,19 @@ const { width } = Dimensions.get('window');
 const SplashScreen = () => {
   // Access our Mint and Navy colors
   const { colors, spacing } = useAppTheme();
+
+
+  const router = useRouter();
+
+useEffect(() => {
+  // Wait 3 seconds then go to login screen
+  const timer = setTimeout(() => {
+    router.replace('/login');
+  }, 2000);
+
+  // Cleanup timer when component unmounts
+  return () => clearTimeout(timer);
+}, []);
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
