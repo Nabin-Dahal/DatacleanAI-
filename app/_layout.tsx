@@ -23,7 +23,7 @@ export default function RootLayout() {
       {/* Register screen — no header */}
       <Stack.Screen
         name="register"
-        options={{ headerShown: true }}
+        options={{ headerShown: false }}
       />
       {/* Forgot Password screen — no header */}
       <Stack.Screen

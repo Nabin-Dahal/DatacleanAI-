@@ -1,4 +1,4 @@
-// src/screens/login-screen.tsx
+// src/screens/register-screen.tsx
 // Full Login Screen with animations, validation and social login
 
 import { useState } from 'react';
@@ -19,7 +19,7 @@ import Logo from '../../components/logo';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FontAwesome6, AntDesign } from '@expo/vector-icons';
 
-const LoginScreen = () => {
+const RegisterScreen = () => {
   // ─── Theme ───────────────────────────────────────────────
   const { colors, spacing, radius, fontSize } = useAppTheme();
   const router = useRouter();
@@ -29,6 +29,8 @@ const LoginScreen = () => {
   // State holds the current value of each input field
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [confirmPasswordError, setConfirmPasswordError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [emailError, setEmailError] = useState('');
   const [passwordError, setPasswordError] = useState('');
@@ -41,6 +43,7 @@ const LoginScreen = () => {
     // Reset errors first
     setEmailError('');
     setPasswordError('');
+    setConfirmPasswordError(''); // Reset confirm password error
 
     // Check email format
     if (!email.includes('@') || !email.includes('.')) {
@@ -54,14 +57,20 @@ const LoginScreen = () => {
       valid = false;
     }
 
+    // // NEW RULE: Check if passwords match
+    if (password !== confirmPassword) {
+        setConfirmPasswordError('Passwords do not match');
+        valid = false;
+    }
+
     return valid;
   };
 
-  // ─── Login Handler ───────────────────────────────────────
-  const handleLogin = () => {
+  // ─── Register Handler ───────────────────────────────────────
+  const handleRegister = () => {
     if (validate()) {
-      // For now just navigate to home
-      // Later we will connect to Supabase auth
+      // This is where the Firebase "Create User" code will go soon
+      console.log('Registering with:',  email);
       router.replace('/home');
     }
   };
@@ -199,7 +208,42 @@ const LoginScreen = () => {
           ) : null}
         </MotiView>
 
-        {/* ── Login Button ── */}
+        {/* ── Confirm Password Input ── */}
+<MotiView
+  from={{ opacity: 0, translateY: 20 }}
+  animate={{ opacity: 1, translateY: 0 }}
+  transition={{ type: 'timing', duration: 500, delay: 600 }} // Slight delay after the first password
+  style={{ width: '100%' }}
+>
+  <View>
+    <TextInput
+      placeholder="Confirm Password"
+      placeholderTextColor={colors.textMuted}
+      value={confirmPassword}
+      onChangeText={setConfirmPassword}
+      secureTextEntry={!showPassword} // Uses the same toggle as the first password
+      style={[
+        styles.input,
+        {
+          backgroundColor: colors.surface,
+          borderColor: confirmPasswordError ? colors.error : colors.border,
+          color: colors.textPrimary,
+          borderRadius: radius.full,
+        },
+      ]}
+    />
+  </View>
+  {/* Show error if passwords don't match */}
+  {confirmPasswordError ? (
+    <Text style={[styles.errorText, { color: colors.error }]}>
+      {confirmPasswordError}
+    </Text>
+  ) : null}
+</MotiView>
+
+
+
+        {/* ── Register Button ── */}
         <MotiView
           from={{ opacity: 0, translateY: 20 }}
           animate={{ opacity: 1, translateY: 0 }}
@@ -207,7 +251,7 @@ const LoginScreen = () => {
           style={{ width: '100%' }}
         >
           <TouchableOpacity
-            onPress={handleLogin}
+            onPress={handleRegister}
             style={[
               styles.loginButton,
               {
@@ -220,7 +264,7 @@ const LoginScreen = () => {
             activeOpacity={0.8}
           >
             <Text style={[styles.loginButtonText, { fontSize: fontSize.md }]}>
-              Login
+              Create Account
             </Text>
           </TouchableOpacity>
         </MotiView>
@@ -238,11 +282,12 @@ const LoginScreen = () => {
             </Text>
           </TouchableOpacity>
 
-          <TouchableOpacity onPress={() => router.push('/register')}>
+          <TouchableOpacity onPress={() => router.push('/login')}>
             <Text style={[styles.linkText, { color: colors.accent, fontSize: fontSize.sm }]}>
-              Don't have account? Sign up
+              Already have an account? Log In
             </Text>
           </TouchableOpacity>
+
         </MotiView>
 
         {/* ── OR Divider ── */}
@@ -391,4 +436,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default LoginScreen;
+export default RegisterScreen;
