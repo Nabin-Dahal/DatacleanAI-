@@ -1,3 +1,8 @@
+// src/screens/register-screen.tsx
+// This is the Register Screen component for the DataCleanAI app.
+// It includes form fields for email and password, validation logic, and a register button.
+// The screen is styled using the app's theme and includes animations with Moti.
+
 import React, { useState } from 'react';
 import { 
   View, 
@@ -60,7 +65,7 @@ const ForgotPasswordScreen = () => {
         </TouchableOpacity>
 
         {/* ── Title & Icon ── */}
-        
+
         <MotiView
           from={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -71,6 +76,8 @@ const ForgotPasswordScreen = () => {
           <MotiText 
             style={[styles.title, { color: colors.textPrimary, fontSize: fontSize.xl }]}
           >
+
+
             Forgot Password?
           </MotiText>
           <Text style={[styles.subtitle, { color: colors.textMuted }]}>
