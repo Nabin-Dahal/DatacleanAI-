@@ -60,6 +60,7 @@ const ForgotPasswordScreen = () => {
         </TouchableOpacity>
 
         {/* ── Title & Icon ── */}
+        
         <MotiView
           from={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
