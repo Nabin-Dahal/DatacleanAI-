@@ -56,3 +56,6 @@ GoogleService-Info.plist
 
 # VS Code
 .vscode/
+
+#env file
+.env
