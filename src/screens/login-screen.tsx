@@ -11,6 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  ActivityIndicator,
 } from 'react-native';
 import { MotiView, MotiText } from 'moti';
 import { useRouter } from 'expo-router';
@@ -18,6 +19,8 @@ import { useAppTheme } from '../../constants/useAppTheme';
 import Logo from '../../components/logo';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FontAwesome6, AntDesign } from '@expo/vector-icons';
+import { Alert } from 'react-native';
+import { supabase } from '../../supabaseClient';
 
 const LoginScreen = () => {
   // ─── Theme ───────────────────────────────────────────────
@@ -32,6 +35,7 @@ const LoginScreen = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [emailError, setEmailError] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const [loading, setLoading] = useState(false);
 
   // ─── Validation ──────────────────────────────────────────
   // Checks if email and password are valid before submitting
@@ -58,13 +62,39 @@ const LoginScreen = () => {
   };
 
   // ─── Login Handler ───────────────────────────────────────
-  const handleLogin = () => {
-    if (validate()) {
-      // For now just navigate to home
-      // Later we will connect to Supabase auth
-      router.replace('/home');
-    }
-  };
+const handleLogin  = async () => {
+  if(!email || !password) {
+    Alert.alert('Validation Error', 'Please enter both email and password');
+    return;
+  }
+
+  // Also, it's a good idea to run your validate() function here 
+  // to check for the @ sign and password length
+  if (!validate()) {
+    return;
+  }
+
+  setLoading(true); // Start loading state
+
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: email,
+    password: password,
+  });
+
+  
+
+  setLoading(false); // End loading state
+
+  if (error) {
+    Alert.alert('Login Failed', error.message);
+  } else if (data.user) {
+    // Navigate to your main app screen (usually 'index' or '(tabs)')
+    router.replace('/home'); // Replace with your actual home screen route
+    console.log('Logged in as:', data.user.email);
+  }
+};
+
+
 
   // ─── UI ──────────────────────────────────────────────────
   return (
@@ -208,6 +238,7 @@ const LoginScreen = () => {
         >
           <TouchableOpacity
             onPress={handleLogin}
+            disabled={loading} // Disable button while loading to prevent multiple taps
             style={[
               styles.loginButton,
               {
@@ -215,13 +246,18 @@ const LoginScreen = () => {
                 borderRadius: radius.full,
                 paddingVertical: spacing.md,
                 marginTop: spacing.sm,
+                opacity: loading ? 0.7 : 1, // Slightly fade button when loading
               },
             ]}
             activeOpacity={0.8}
           >
+            {loading ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
             <Text style={[styles.loginButtonText, { fontSize: fontSize.md }]}>
               Login
             </Text>
+            )}
           </TouchableOpacity>
         </MotiView>
 
@@ -265,10 +301,10 @@ const LoginScreen = () => {
             icon: <AntDesign name="google" size={20}color="#4285F4" />, 
             key: 'google'},
           { label: 'Continue with Apple',
-            icon: <FontAwesome6 name="apple" size={20} color="#000000" />,
+            icon: <FontAwesome6 name="apple" size={20} color={colors.textPrimary} />,
             key: 'apple' },
           { label: 'Continue with X',
-            icon: <FontAwesome6 name="x-twitter" size={20} color="#000000" />,
+            icon: <FontAwesome6 name="x-twitter" size={20} color={colors.textPrimary} />,
             key: 'x' },
         ].map((item, index) => (
           <MotiView

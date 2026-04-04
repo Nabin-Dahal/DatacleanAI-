@@ -18,6 +18,8 @@ import { useAppTheme } from '../../constants/useAppTheme';
 import Logo from '../../components/logo';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FontAwesome6, AntDesign } from '@expo/vector-icons';
+import { Alert } from 'react-native';
+import { supabase } from '../../supabaseClient';
 
 const RegisterScreen = () => {
   // ─── Theme ───────────────────────────────────────────────
@@ -34,6 +36,7 @@ const RegisterScreen = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [emailError, setEmailError] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const [loading, setLoading] = useState(false);
 
   // ─── Validation ──────────────────────────────────────────
   // Checks if email and password are valid before submitting
@@ -67,13 +70,27 @@ const RegisterScreen = () => {
   };
 
   // ─── Register Handler ───────────────────────────────────────
-  const handleRegister = () => {
-    if (validate()) {
-      // This is where the Firebase "Create User" code will go soon
-      console.log('Registering with:',  email);
-      router.replace('/home');
+ 
+const handleRegister = async () => {
+  if (validate()) { 
+    setLoading(true); // 1. Start the animation
+
+    const { data, error } = await supabase.auth.signUp({
+      email: email,
+      password: password,
+    });
+
+    setLoading(false); // 2. Stop the animation regardless of success/error
+
+    if (error) {
+      Alert.alert('Registration Error', error.message);
+    } else if (data.user) {
+      Alert.alert('Success!', 'Account created successfully!', [
+        { text: 'OK', onPress: () => router.replace('/login') }
+      ]);
     }
-  };
+  }
+};
 
   // ─── UI ──────────────────────────────────────────────────
   return (
@@ -252,6 +269,7 @@ const RegisterScreen = () => {
         >
           <TouchableOpacity
             onPress={handleRegister}
+            disabled={loading} // This is key! Disables the button while loading to prevent multiple taps
             style={[
               styles.loginButton,
               {
