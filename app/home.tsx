@@ -1,14 +1,7 @@
-import { View, Text } from "react-native";
-import { useAppTheme } from "@/constants/useAppTheme";
+// app/home.tsx
+// This is the route file — it simply imports and shows our HomeScreen
 
 
-export default function Home() {
-  const { colors } = useAppTheme();
-    return (
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background }}>
-      <Text style={{ color: colors.textPrimary }}>Home Dashboard (Coming Tomorrow!)</Text>
-    </View>
-    );
-}
+import HomeScreen from '../src/screens/home-screen';
 
-
+export default HomeScreen;
