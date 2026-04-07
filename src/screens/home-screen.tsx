@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect } from 'react'
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, Platform } from 'react-native';
 import { useAppTheme } from '../../constants/useAppTheme'; 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -11,6 +11,7 @@ const HomeScreen = () => {
   const { colors, spacing } = useAppTheme();
   const insets = useSafeAreaInsets();
   const [username, setUsername] = useState('User');
+  const [message, setMessage] = useState('');
 
   // 1. Get the logged-in user's name
   useEffect(() => {
@@ -136,9 +137,14 @@ const HomeScreen = () => {
     <TouchableOpacity style={styles.aiIconCircle}>
         <MaterialCommunityIcons name="auto-fix" size={20} color={colors.accent} />
     </TouchableOpacity>
-    <Text style={[styles.aiPlaceholder, { color: colors.textMuted }]}>
-        Ask Bubble AI to help you clean your data...
-    </Text>
+    <TextInput
+    style={[styles.aiInput, { color: colors.textPrimary }]}
+    placeholder="Ask Bubble AI to help you clean your data..."
+    placeholderTextColor={colors.textMuted}
+    value={message}
+    onChangeText={(text) => setMessage(text)}
+    multiline={false} // Keeps it a single line for now
+  />
 
     <TouchableOpacity style={[styles.sendBtn , { backgroundColor: colors.accent }]}>
         <MaterialCommunityIcons name="arrow-up" size={20} color="white" />
@@ -269,6 +275,13 @@ aiBarContainer: {
     marginLeft: 12,
     fontSize: 14,
     fontWeight: '500',
+  },
+aiInput: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 14,
+    fontWeight: '500',
+    paddingVertical: 10, // Gives you a larger touch area to start typing
   },
   sendBtn: {
     width: 44,
