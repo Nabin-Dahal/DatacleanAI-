@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, Platform, KeyboardAvoidingView } from 'react-native';
 import { useAppTheme } from '../../constants/useAppTheme'; 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -34,7 +34,29 @@ const HomeScreen = () => {
   return (
     <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
       <StatusBar style="light" />
+
+
+    <KeyboardAvoidingView 
+      // FIX: Use 'padding' for both. On Android, this forces the layout to 'shrink'
+      behavior={Platform.OS === 'ios' ? 'padding' : 'padding'} 
+      style={{ flex: 1 }}
+      // FIX: Offset -60 for Android forces the bar into the visible window
+     keyboardVerticalOffset={Platform.OS === 'ios' ? -30: -25}
+    >
+
+
+    {/* 1. WRAPPER FOR SCROLLABLE CONTENT */}
+      <View style={{ flex: 1 }}>
+        <ScrollView 
+          contentContainerStyle={{ padding: spacing.lg }}
+          showsVerticalScrollIndicator={false}
+          // FIX: This tells the keyboard to go away if you scroll down
+          keyboardDismissMode="on-drag"
+        >
       
+
+
+
       {/* HEADER AREA */}
       <View style={[styles.header, { paddingHorizontal: spacing.lg, marginTop: spacing.md }]}>
         <View>
@@ -52,12 +74,8 @@ const HomeScreen = () => {
         </TouchableOpacity>
       </View>
 
-      {/* We will add the main content card here in the next step */}
-
-      <ScrollView 
-  contentContainerStyle={{ padding: spacing.lg }}
-  showsVerticalScrollIndicator={false}
->
+     
+      
   {/* ACTION CARD */}
   <TouchableOpacity 
     style={[
@@ -123,33 +141,38 @@ const HomeScreen = () => {
         </View>
 
         {/* This adds invisible space so you can scroll past the AI bar */}
-        <View style={{ height: 120 }} />
+              
 </ScrollView>
+</View>
 
 {/* AI CHAT BAR  */}
 
-<View style = {[
-    styles.aiBarContainer,
-    {
-        bottom: insets.bottom + spacing.md,
-    }
-]}>
-    <TouchableOpacity style={styles.aiIconCircle}>
-        <MaterialCommunityIcons name="auto-fix" size={20} color={colors.accent} />
-    </TouchableOpacity>
+<View style={styles.aiBarContainer}>
+        <TouchableOpacity style={styles.aiIconCircle}>
+          <MaterialCommunityIcons name="auto-fix" size={20} color={colors.accent} />
+        </TouchableOpacity>
+
+
     <TextInput
     style={[styles.aiInput, { color: colors.textPrimary }]}
-    placeholder="Ask Bubble AI to help you clean your data..."
-    placeholderTextColor={colors.textMuted}
-    value={message}
-    onChangeText={(text) => setMessage(text)}
-    multiline={false} // Keeps it a single line for now
-  />
+            placeholder="Ask Bubble AI..."
+            placeholderTextColor={colors.textMuted}
+            value={message}
+            onChangeText={(text) => setMessage(text)}
+          />
+
+
+
 
     <TouchableOpacity style={[styles.sendBtn , { backgroundColor: colors.accent }]}>
         <MaterialCommunityIcons name="arrow-up" size={20} color="white" />
     </TouchableOpacity>
 </View>
+
+
+<View style={{ height: insets.bottom + 5 }} />
+</KeyboardAvoidingView>
+
     </View>
   );
 };
@@ -242,26 +265,37 @@ emptyText: {
   textAlign: 'center',
   lineHeight: 18,
 },
+
+
+
+
 aiBarContainer: {
-    position: 'absolute',
-    left: 20,
-    right: 20,
-    height: 60,
-    borderRadius: 30,
-    // 1. Change this to be see-through (RGBA)
-    backgroundColor: 'rgba(30, 41, 59, 0.7)',
-    // 2. Make the border a very faint white "shine"
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.15,
-    shadowRadius: 10,
-    elevation: 8,
-  },
+  // REMOVED: position, left, right, and bottom
+  height: 60,
+  marginHorizontal: 20, 
+  borderRadius: 30,
+  backgroundColor: 'rgba(30, 41, 59, 0.7)',
+  borderWidth: 1,
+  borderColor: 'rgba(255, 255, 255, 0.15)',
+  flexDirection: 'row',
+  alignItems: 'center',
+  paddingHorizontal: 8,
+  // Shadow to keep the floating "Glass" look
+  shadowColor: "#000",
+  shadowOffset: { width: 0, height: 10 },
+  shadowOpacity: 0.3,
+  shadowRadius: 20,
+  elevation: 8,
+},
+
+
+
+
+
+
+
+
+
   aiIconCircle: {
     width: 44,
     height: 44,
@@ -282,7 +316,7 @@ aiInput: {
     fontSize: 14,
     fontWeight: '500',
     paddingVertical: 10, // Gives you a larger touch area to start typing
-  },
+  },   
   sendBtn: {
     width: 44,
     height: 44,
