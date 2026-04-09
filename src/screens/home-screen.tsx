@@ -6,13 +6,22 @@ import { StatusBar } from 'expo-status-bar';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../../supabaseClient';
 import { ScrollView } from 'react-native';
+import * as DocumentPicker from 'expo-document-picker';
+import type { DocumentPickerAsset } from 'expo-document-picker';
 
+
+
+// This is the main Home Screen that users see after logging in.
 const HomeScreen = () => {
   const { colors, spacing } = useAppTheme();
   const insets = useSafeAreaInsets();
   const [username, setUsername] = useState('User');
   const [message, setMessage] = useState('');
+  const [selectedFile, setSelectedFile] = useState<DocumentPickerAsset | null>(null);
+  
 
+
+  
   // 1. Get the logged-in user's name
   useEffect(() => {
     const fetchUser = async () => {
@@ -25,11 +34,35 @@ const HomeScreen = () => {
     fetchUser();
   }, []);
 
+
+
   // 2. Simple Logout function
   const handleLogout = async () => {
     await supabase.auth.signOut();
     // Your _layout.tsx will automatically see the session is gone and move you to Login
   };
+
+
+  
+
+  const pickDocument = async () => {
+  try {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: ['text/csv', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']
+    });
+
+    if (!result.canceled && result.assets && result.assets.length > 0) {
+      const file = result.assets[0];
+      setSelectedFile(file); 
+      alert("File Selected: " + file.name);
+    }
+  } catch (err) {
+    console.log("Error picking file:", err);
+  }
+};
+
+
+
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
@@ -76,12 +109,44 @@ const HomeScreen = () => {
 
      
       
-  {/* ACTION CARD */}
-  <TouchableOpacity 
-    style={[
-      styles.actionCard, 
-      { backgroundColor: colors.surface, borderColor: colors.border }
-    ]}
+  {/* ACTION CARD - DYNAMIC VERSION */}
+{selectedFile ? (
+  // --- SHOW THIS IF FILE IS SELECTED ---
+  <View style={[styles.actionCard, { backgroundColor: colors.surface, borderColor: colors.accent, borderWidth: 1 }]}>
+    <View style={[styles.iconCircle, { backgroundColor: colors.accent + '20' }]}>
+      <MaterialCommunityIcons name="file-check" size={32} color={colors.accent} />
+    </View>
+    
+    <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
+      {selectedFile.name}
+    </Text>
+    
+    <Text style={[styles.cardSub, { color: colors.textMuted, marginBottom: 15 }]}>
+      {selectedFile.size
+    ? `${(selectedFile.size /1024).toFixed(2)} KB`
+    : 'File'}• Ready to clean
+    </Text>
+
+    <View style={{ flexDirection: 'row', gap: 10 }}>
+       <TouchableOpacity 
+         onPress={() => setSelectedFile(null)} 
+         style={{ backgroundColor: 'rgba(255, 68, 68, 0.1)', paddingVertical: 12, paddingHorizontal: 20, borderRadius: 12 }}
+       >
+         <Text style={{ color: '#ff4444', fontWeight: '600' }}>Remove</Text>
+       </TouchableOpacity>
+
+       <TouchableOpacity 
+         style={[styles.startBtn, { backgroundColor: colors.accent, flex: 1, marginTop: 0 }]}
+       >
+         <Text style={styles.startBtnText}>Start Cleaning ✨</Text>
+       </TouchableOpacity>
+    </View>
+  </View>
+) : (
+  // --- SHOW THIS IF NO FILE (Your original code) ---
+  <TouchableOpacity
+    onPress={pickDocument} 
+    style={[styles.actionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
     activeOpacity={0.8}
   >
     <View style={[styles.iconCircle, { backgroundColor: colors.accent + '20' }]}>
@@ -100,6 +165,7 @@ const HomeScreen = () => {
       <MaterialCommunityIcons name="arrow-right" size={18} color="white" />
     </View>
   </TouchableOpacity>
+)}
 
   {/* Placeholder for Step 4: The Stats/Recent Activity row */}
 
@@ -154,14 +220,19 @@ const HomeScreen = () => {
 
 
     <TextInput
-    style={[styles.aiInput, { color: colors.textPrimary }]}
+    style={[styles.aiInput, { color: '#FFFFFF' }]}
             placeholder="Ask Bubble AI..."
-            placeholderTextColor={colors.textMuted}
+            placeholderTextColor="rgba(255, 255, 255, 0.5)"
             value={message}
             onChangeText={(text) => setMessage(text)}
           />
 
-
+          <TouchableOpacity 
+    style={[styles.voiceBtn, { marginRight: 8 }]}
+    onPress={() => alert("Voice listening started...")} // Placeholder for now
+  >
+    <MaterialCommunityIcons name="microphone" size={22} color={colors.accent} />
+  </TouchableOpacity>
 
 
     <TouchableOpacity style={[styles.sendBtn , { backgroundColor: colors.accent }]}>
@@ -274,7 +345,7 @@ aiBarContainer: {
   height: 60,
   marginHorizontal: 20, 
   borderRadius: 30,
-  backgroundColor: 'rgba(30, 41, 59, 0.7)',
+  backgroundColor: 'rgba(15, 23, 42, 0.85)', // Semi-transparent dark background
   borderWidth: 1,
   borderColor: 'rgba(255, 255, 255, 0.15)',
   flexDirection: 'row',
@@ -317,6 +388,13 @@ aiInput: {
     fontWeight: '500',
     paddingVertical: 10, // Gives you a larger touch area to start typing
   },   
+  voiceBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   sendBtn: {
     width: 44,
     height: 44,
