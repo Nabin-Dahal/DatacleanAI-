@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, Platform, KeyboardAvoidingView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, TextInput, Platform, KeyboardAvoidingView, ActivityIndicator } from 'react-native';
 import { useAppTheme } from '../../constants/useAppTheme'; 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -8,6 +8,7 @@ import { supabase } from '../../supabaseClient';
 import { ScrollView } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import type { DocumentPickerAsset } from 'expo-document-picker';
+import { useRouter } from 'expo-router';
 
 
 
@@ -18,6 +19,8 @@ const HomeScreen = () => {
   const [username, setUsername] = useState('User');
   const [message, setMessage] = useState('');
   const [selectedFile, setSelectedFile] = useState<DocumentPickerAsset | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const router = useRouter();
   
 
 
@@ -44,7 +47,7 @@ const HomeScreen = () => {
 
 
   
-
+ // 3. Document Picker function
   const pickDocument = async () => {
   try {
     const result = await DocumentPicker.getDocumentAsync({
@@ -62,6 +65,41 @@ const HomeScreen = () => {
 };
 
 
+
+// 4. Upload function to send the file to Supabase Storage
+const uploadFile = async () => {
+  if (!selectedFile) return;
+
+  setIsUploading(true);
+
+  try {
+    const response = await fetch(selectedFile.uri);
+    const blob = await response.blob();
+    const fileName = `${Date.now()}-${selectedFile.name}`;
+
+    const { data, error } = await supabase.storage
+      .from('datasets')
+      .upload(fileName, blob, {
+        contentType: selectedFile.mimeType || 'text/csv',
+});
+
+if (error) throw error;
+alert("File uploaded successfully!");
+
+// After successful upload, navigate to the cleaning screen and pass the file name as a parameter
+router.push({
+      pathname: '/cleanscreen',
+      params: { fileName: selectedFile.name }
+    } as any);
+
+
+
+  } catch (error: any) {
+    alert("Upload failed: " + error.message);
+  } finally {
+    setIsUploading(false);
+  }
+};
 
 
   return (
@@ -135,10 +173,17 @@ const HomeScreen = () => {
          <Text style={{ color: '#ff4444', fontWeight: '600' }}>Remove</Text>
        </TouchableOpacity>
 
-       <TouchableOpacity 
+       <TouchableOpacity
+          onPress={uploadFile} // This will trigger the upload function we defined
+          disabled={isUploading} // Disable button while uploading
          style={[styles.startBtn, { backgroundColor: colors.accent, flex: 1, marginTop: 0 }]}
        >
-         <Text style={styles.startBtnText}>Start Cleaning ✨</Text>
+        {isUploading ? (
+          <ActivityIndicator color="white" />
+        ) : (
+          <Text style={styles.startBtnText}>Start Cleaning ✨</Text>
+          )}
+         
        </TouchableOpacity>
     </View>
   </View>
