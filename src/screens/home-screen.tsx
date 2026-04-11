@@ -9,6 +9,9 @@ import { ScrollView } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import type { DocumentPickerAsset } from 'expo-document-picker';
 import { useRouter } from 'expo-router';
+// Notice the "/legacy" at the end
+import * as FileSystem from 'expo-file-system/legacy'; 
+import { decode } from 'base64-arraybuffer';
 
 
 
@@ -67,35 +70,39 @@ const HomeScreen = () => {
 
 
 // 4. Upload function to send the file to Supabase Storage
+
 const uploadFile = async () => {
   if (!selectedFile) return;
-
   setIsUploading(true);
 
   try {
-    const response = await fetch(selectedFile.uri);
-    const blob = await response.blob();
-    const fileName = `${Date.now()}-${selectedFile.name}`;
+    // This now calls the legacy method without the warning
+    const base64 = await FileSystem.readAsStringAsync(selectedFile.uri, {
+      encoding: 'base64', 
+    });
 
+    const arrayBuffer = decode(base64);
+    const fileName = `${Date.now()}-${selectedFile.name.replace(/\s+/g, '_')}`;
+
+    // Upload to Supabase
     const { data, error } = await supabase.storage
       .from('datasets')
-      .upload(fileName, blob, {
-        contentType: selectedFile.mimeType || 'text/csv',
-});
+      .upload(fileName, arrayBuffer, {
+        contentType: 'text/csv',
+        upsert: true
+      });
 
-if (error) throw error;
-alert("File uploaded successfully!");
+    if (error) throw error;
 
-// After successful upload, navigate to the cleaning screen and pass the file name as a parameter
-router.push({
+    alert("Success!");
+    router.push({
       pathname: '/cleanscreen',
-      params: { fileName: selectedFile.name }
+      params: { fileName: fileName }
     } as any);
 
-
-
   } catch (error: any) {
-    alert("Upload failed: " + error.message);
+    console.error("Android Upload Error:", error);
+    alert("Error: " + error.message);
   } finally {
     setIsUploading(false);
   }
