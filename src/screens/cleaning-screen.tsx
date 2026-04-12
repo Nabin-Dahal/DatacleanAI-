@@ -7,19 +7,26 @@ import {
   ActivityIndicator, 
   FlatList, 
   ScrollView,
-  Alert 
+  Alert,
+  TextInput, 
+  KeyboardAvoidingView, 
+  Platform 
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../../supabaseClient'; 
+import { useAppTheme } from '../../constants/useAppTheme';
 
 const CleaningScreen = () => {
+  const { colors, isDark, spacing, radius } = useAppTheme();
   const router = useRouter();
   const { fileName } = useLocalSearchParams();
+  const [message, setMessage] = useState('');
   
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  // ─── UNTOUCHED DATA LOGIC ──────────────────────────────────────
   const fetchAndParseCSV = async () => {
     try {
       setLoading(true);
@@ -83,34 +90,45 @@ const CleaningScreen = () => {
     fetchAndParseCSV();
   }, []);
 
+  // ─── DYNAMIC UI RENDERING ──────────────────────────────────────
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      
       {/* Header Area */}
-      <View style={styles.header}>
+      <View style={[styles.header, { backgroundColor: colors.background }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <MaterialCommunityIcons name="arrow-left" size={28} color="#ffffff" />
+          <MaterialCommunityIcons name="arrow-left" size={28} color={colors.textPrimary} />
         </TouchableOpacity>
         <View>
-          <Text style={styles.headerTitle}>AI Cleaning Hub</Text>
-          <Text style={styles.subtitle}>{fileName || 'Dataset Preview'}</Text>
+          <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>AI Cleaning Hub</Text>
+          <Text style={[styles.subtitle, { color: colors.accent }]}>{fileName || 'Dataset Preview'}</Text>
         </View>
       </View>
 
       {/* Main Content Area */}
-      <View style={styles.content}>
+      <View style={[
+        styles.content, 
+        { 
+          backgroundColor: colors.surface,
+          borderColor: colors.border,
+        }
+      ]}>
         {loading ? (
           <View style={styles.center}>
-            <ActivityIndicator size="large" color="#10b981" />
-            <Text style={styles.loadingText}>Reading Dataset...</Text>
+            <ActivityIndicator size="large" color={colors.accent} />
+            <Text style={[styles.loadingText, { color: colors.textMuted }]}>Reading Dataset...</Text>
           </View>
         ) : data.length > 0 ? (
-          <ScrollView horizontal showsHorizontalScrollIndicator={true}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={true}
+          >
             <View>
               {/* Dynamic Table Header */}
-              <View style={styles.tableHeader}>
+              <View style={[styles.tableHeader, { backgroundColor: colors.surface, borderBottomColor: colors.accent }]}>
                 {Object.keys(data[0]).map((key) => (
-                  <View key={key} style={styles.headerCell}>
-                    <Text style={styles.headerText}>{key}</Text>
+                  <View key={key} style={[styles.headerCell, { borderRightColor: colors.border }]}>
+                    <Text style={[styles.headerText, { color: colors.accent }]}>{key}</Text>
                   </View>
                 ))}
               </View>
@@ -119,11 +137,12 @@ const CleaningScreen = () => {
               <FlatList
                 data={data}
                 keyExtractor={(_, index) => index.toString()}
+                contentContainerStyle={{ paddingBottom: 20 }}
                 renderItem={({ item }) => (
-                  <View style={styles.tableRow}>
+                  <View style={[styles.tableRow, { borderBottomColor: colors.border }]}>
                     {Object.values(item).map((val: any, i) => (
-                      <View key={i} style={styles.cell}>
-                        <Text style={styles.cellText} numberOfLines={1}>
+                      <View key={i} style={[styles.cell, { borderRightColor: colors.border }]}>
+                        <Text style={[styles.cellText, { color: colors.textPrimary }]} numberOfLines={1}>
                           {val}
                         </Text>
                       </View>
@@ -135,28 +154,67 @@ const CleaningScreen = () => {
           </ScrollView>
         ) : (
           <View style={styles.center}>
-            <MaterialCommunityIcons name="database-off" size={60} color="#374151" />
-            <Text style={styles.placeholder}>No data found in this file.</Text>
-            <TouchableOpacity style={styles.retryBtn} onPress={fetchAndParseCSV}>
-              <Text style={styles.retryText}>Retry Load</Text>
+            <MaterialCommunityIcons name="database-off" size={60} color={colors.textMuted} />
+            <Text style={[styles.placeholder, { color: colors.textMuted }]}>No data found in this file.</Text>
+            <TouchableOpacity 
+              style={[styles.retryBtn, { backgroundColor: colors.background, borderColor: colors.border }]} 
+              onPress={fetchAndParseCSV}
+            >
+              <Text style={[styles.retryText, { color: colors.accent }]}>Retry Load</Text>
             </TouchableOpacity>
           </View>
         )}
       </View>
 
-      {/* Footer Info */}
-      <View style={styles.footer}>
-        <MaterialCommunityIcons name="auto-fix" size={20} color="#10b981" />
-        <Text style={styles.footerText}> AI is ready to clean this dataset</Text>
-      </View>
+      {/* Chat Area */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+      >
+        <View style={[styles.chatWrapper, { backgroundColor: 'transparent' }]}>
+          <View style={[
+            styles.chatContainer, 
+            { backgroundColor: colors.surface, borderColor: colors.border }
+          ]}>
+
+           
+            <TouchableOpacity style={[styles.magicButton, { backgroundColor: colors.background }]}>
+              <MaterialCommunityIcons name="auto-fix" size={20} color={colors.accent} />
+            </TouchableOpacity>
+
+            
+            
+            <TextInput
+              style={[styles.input, { color: colors.textPrimary }]}
+              placeholder="Ask Bubble AI..."
+              placeholderTextColor={colors.textMuted}
+              value={message}
+              onChangeText={setMessage}
+              multiline={false}
+            />
+
+
+            {/* Microphone Icon (The one I missed!) */}
+      <TouchableOpacity style={{ marginRight: 15 }}>
+        <MaterialCommunityIcons name="microphone" size={22} color={colors.accent} />
+      </TouchableOpacity>
+
+            
+
+            <TouchableOpacity style={[styles.sendButton , { backgroundColor: colors.accent }]}>
+                    <MaterialCommunityIcons name="arrow-up" size={20} color="white" />
+                </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
     </View>
   );
 };
 
+// ─── STYLES (Hardcoded colors removed, layout kept intact) ──────
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#030712',
   },
   header: {
     flexDirection: 'row',
@@ -164,31 +222,31 @@ const styles = StyleSheet.create({
     paddingTop: 60,
     paddingHorizontal: 20,
     paddingBottom: 20,
-    backgroundColor: '#030712',
   },
   backButton: {
     marginRight: 15,
   },
   headerTitle: {
-    color: '#ffffff',
     fontSize: 22,
     fontWeight: 'bold',
   },
   subtitle: {
-    color: '#10b981',
     fontSize: 12,
     textTransform: 'uppercase',
     letterSpacing: 1,
   },
   content: {
     flex: 1,
-    backgroundColor: '#0f172a',
     marginHorizontal: 15,
     marginBottom: 10,
     borderRadius: 16,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: '#1e293b',
+    elevation: 2, 
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
   },
   center: {
     flex: 1,
@@ -197,55 +255,35 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   loadingText: {
-    color: '#9ca3af',
     marginTop: 15,
     fontSize: 16,
   },
   tableHeader: {
     flexDirection: 'row',
-    backgroundColor: '#1e293b',
     borderBottomWidth: 2,
-    borderColor: '#10b981',
   },
   headerCell: {
     width: 140,
     padding: 15,
     borderRightWidth: 1,
-    borderColor: '#334155',
   },
   headerText: {
-    color: '#10b981',
     fontWeight: 'bold',
     fontSize: 12,
   },
   tableRow: {
     flexDirection: 'row',
     borderBottomWidth: 1,
-    borderColor: '#1e293b',
   },
   cell: {
     width: 140,
     padding: 15,
     borderRightWidth: 1,
-    borderColor: '#1e293b',
   },
   cellText: {
-    color: '#cbd5e1',
     fontSize: 13,
   },
-  footer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-    backgroundColor: '#030712',
-  },
-  footerText: {
-    color: '#9ca3af',
-    fontSize: 14,
-  },
   placeholder: {
-    color: '#9ca3af',
     marginTop: 10,
     textAlign: 'center',
   },
@@ -253,13 +291,43 @@ const styles = StyleSheet.create({
     marginTop: 20,
     paddingVertical: 10,
     paddingHorizontal: 20,
-    backgroundColor: '#1e293b',
     borderRadius: 8,
+    borderWidth: 1,
   },
   retryText: {
-    color: '#10b981',
     fontWeight: '600',
-  }
+  },
+  chatWrapper: {
+    paddingTop: 0,
+    paddingBottom: Platform.OS === 'ios' ? 30 : 40, 
+  },
+  chatContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 15,
+    marginBottom: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 30,
+    borderWidth: 1,
+  },
+  magicButton: {
+    padding: 8,
+    borderRadius: 20,
+  },
+  input: {
+    flex: 1,
+    paddingHorizontal: 15,
+    fontSize: 15,
+    height: 40,
+  },
+  sendButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
 });
 
 export default CleaningScreen;
