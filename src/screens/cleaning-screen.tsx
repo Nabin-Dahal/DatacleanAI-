@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, 
   Text, 
@@ -53,6 +53,7 @@ const CleaningScreen = () => {
   const [message, setMessage] = useState('');
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const chatScrollViewRef = useRef<ScrollView>(null);
 
 
   // Initial system message to greet the user and set the context for Bubble AI
@@ -136,50 +137,182 @@ const [messages, setMessages] = useState([
 const getDataSummary = () => {
   if (data.length === 0) return "The dataset is currently empty.";
 
-  // 1. Get the Column Names
-  const headers = Object.keys(data[0]).join(", ");
+  const headers = Object.keys(data[0]);
+  
+  // 1. STATS ENGINE: Calculate counts for ALL columns automatically
+  // This gives Gemini the "answers" without sending 500 rows of text.
+  const stats = headers.reduce((acc: any, header) => {
+    const values = data.map(row => row[header]);
+    const uniqueCount = new Set(values).size;
+    
+    // If a column has few unique values (like Gender), count them!
+    if (uniqueCount < 10) {
+      acc[header] = values.reduce((counts: any, v) => {
+        counts[v] = (counts[v] || 0) + 1;
+        return counts;
+      }, {});
+    } else {
+      acc[header] = `Contains ${uniqueCount} unique values.`;
+    }
+    return acc;
+  }, {});
 
-  // 2. Get a sample of the first 5 rows
-  const sampleRows = data.slice(0, 5).map(row => 
-    JSON.stringify(Object.values(row))
-  ).join("\n");
-
-  // 3. Create the summary text
   return `
-    DATASET SUMMARY:
-    - Total Rows: ${data.length}
-    - Columns: ${headers}
-    - Sample Data (First 5 rows):
-    ${sampleRows}
+    FACTS (Trust these for totals):
+    - Rows: ${data.length}
+    - Columns: ${headers.join(", ")}
+    - Detailed Stats: ${JSON.stringify(stats)}
+
+    SAMPLE (First 3 rows only):
+    ${data.slice(0, 3).map(row => JSON.stringify(Object.values(row))).join("\n")}
+
+    USER INSTRUCTION: Use the "Detailed Stats" above to answer counts/totals instantly.
   `;
 };
-  
+
+
+
+// ─── THE ACTION ENGINE: EDITING THE DATA ───────────────────────
+ const applyCleaningAction = (action: string, column: string, logic: string) => {
+  const updatedData = data.map((row) => {
+    let value = String(row[column] || "");
+
+    if (action === "FIX_GENDER") {
+      return { ...row, [column]: value.charAt(0).toUpperCase() + value.slice(1).toLowerCase() };
+    }
+    if (action === "REMOVE_WHITESPACE") {
+      return { ...row, [column]: value.trim() };
+    }
+    // NEW: Generic Logic (Add more specific cases as you discover them!)
+    if (action === "CAPITALIZE_ALL") {
+      return { ...row, [column]: value.toUpperCase() };
+    }
+
+    return row; 
+  });
+
+  setData(updatedData);
+  Alert.alert("Data Updated", `Applied cleaning to: ${column}`);
+};
+
+
+
+
+
+
+
+ // ─── THE BRAIN: CALLING GEMINI AI ──────────────────────────────
+ const callGeminiAI = async (userPrompt: string) => {
+  try {
+   const dataSnapshot = getDataSummary(); 
+   
+   // Pulling the key from your .env file
+   const API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+   
+   // Log to verify key is loaded (Should show 'true' in terminal)
+   console.log("API Key Loaded:", !!API_KEY); 
+
+   if (!API_KEY) {
+    return "Error: API Key is missing. Check your .env file and restart Expo.";
+   }
+
+   const API_URL = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
+
+   const fullPrompt = `
+    ${BUBBLE_AI_SYSTEM_PROMPT}
+    
+    HERE IS THE DATASET CONTEXT:
+    ${dataSnapshot}
+
+    USER COMMAND:
+    ${userPrompt}
+   `;
+
+   console.log("Sending to Gemini...");
+
+   const response = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+     contents: [{ parts: [{ text: fullPrompt }] }],
+     generationConfig: {
+       temperature: 0.1,
+       maxOutputTokens: 1000,
+     }
+    }),
+   });
+   if (response.status === 503 || response.status === 429) {
+  // Wait 2 seconds and retry once
+  await new Promise(res => setTimeout(res, 2000));
+  return callGeminiAI(userPrompt); 
+}
+
+   const result = await response.json();
+
+   if (result.candidates && result.candidates[0].content.parts[0].text) {
+    return result.candidates[0].content.parts[0].text;
+   } else {
+    console.error("Gemini Error Detail:", result);
+    return "I received an unexpected response format from the AI.";
+   }
+
+  } catch (err) {
+   console.error("Gemini Connection Error:", err);
+   return "I'm having trouble connecting to Gemini. Please check your connection.";
+  }
+ };
 
 
 
 
   // ─── MESSAGE HANDLING LOGIC ──────────────────────────────────────
-  const handleSendMessage = () => {
+  const handleSendMessage = async () => {
     if (message.trim() === '') return;
 
-  console.log("--- AI SNAPSHOT ---");
-  console.log(getDataSummary());
+    const userText = message;
+    setMessage(''); // Clear input immediately for better UX
 
-  // Append the user's message to the conversation history
-  const newUserMessage = {
-    role: "user",
-    parts: [{text: message}]
+    // 1. Add User's message to the chat
+    const newUserMessage = { role: "user", parts: [{ text: userText }] };
+    setMessages((prev) => [...prev, newUserMessage]);
+
+    // 2. Add a temporary "Thinking..." bubble so the user knows AI is working
+    const thinkingMessage = { role: "model", parts: [{ text: "Thinking..." }] };
+    setMessages((prev) => [...prev, thinkingMessage]);
+
+    // 3. Call the Gemini Brain
+    const aiResponse = await callGeminiAI(userText);
+
+    // 4. Replace "Thinking..." with the actual AI response
+    setMessages((prev) => {
+      const chatHistory = [...prev];
+      chatHistory.pop(); // Remove the "Thinking..." bubble
+      return [...chatHistory, { role: "model", parts: [{ text: aiResponse }] }];
+    });
+
+    // 5. THE ACTION ENGINE: Check if Gemini sent a JSON command to edit data
+    try {
+      if (aiResponse.includes("{") && aiResponse.includes("}")) {
+        const jsonStart = aiResponse.indexOf("{");
+        const jsonEnd = aiResponse.lastIndexOf("}") + 1;
+        const jsonString = aiResponse.substring(jsonStart, jsonEnd);
+        
+        const cleanCommand = JSON.parse(jsonString);
+
+        // If it's a valid cleaning action, run the engine!
+        if (cleanCommand.action && cleanCommand.column) {
+          console.log("AI Action Detected:", cleanCommand.action);
+          applyCleaningAction(
+            cleanCommand.action, 
+            cleanCommand.column, 
+            cleanCommand.logic
+          );
+        }
+      }
+    } catch (e) {
+      console.log("No valid JSON action found in response.");
+    }
   };
-
-// Update the messages state with the new user message
-  setMessages((prevMessages) => [...prevMessages, newUserMessage]);
-    setMessage('');
-  };
-
-
-  // For debugging: Log the user's message and the current conversation history
-  console.log("User sent Command:", message);
-
 
 
 
@@ -207,7 +340,15 @@ const getDataSummary = () => {
       </View>
 
       {/* 3. MAIN CONTENT (TABLE) - Set to flex: 1 so it shrinks when keyboard opens */}
-      <View style={[styles.content, { flex: 1, backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <View style={[
+  styles.content, 
+  { 
+    // If messages > 1 (meaning user has started chatting), shrink the table
+    flex: messages.length > 1 ? 0.6 : 1.2, 
+    backgroundColor: colors.surface, 
+    borderColor: colors.border 
+  }
+]}>
         {loading ? (
           <View style={styles.center}>
             <ActivityIndicator size="large" color={colors.accent} />
@@ -228,6 +369,7 @@ const getDataSummary = () => {
               {/* Data Rows */}
               <FlatList
                 data={data}
+                extraData={data} // Force re-render when data changes
                 keyExtractor={(_, index) => index.toString()}
                 renderItem={({ item }) => (
                   <View style={[styles.tableRow, { borderBottomColor: colors.border }]}>
@@ -252,11 +394,18 @@ const getDataSummary = () => {
       </View>
 
       {/* 4. CHAT MESSAGES AREA */}
-      <View style={{ maxHeight: 150 }}>
+      <View style={{ 
+  // If messages > 1, grow the chat area to take more space
+  flex: messages.length > 1 ? 1.4 : 0.4, 
+  marginBottom: 5 
+}}>
         <ScrollView 
-          contentContainerStyle={{ paddingHorizontal: 15, paddingVertical: 10 }}
-          showsVerticalScrollIndicator={false}
-        >
+    contentContainerStyle={{ paddingHorizontal: 15, paddingVertical: 10 }}
+    showsVerticalScrollIndicator={true}
+    // Autoscroll to bottom code
+    ref={chatScrollViewRef}
+    onContentSizeChange={() => chatScrollViewRef.current?.scrollToEnd({ animated: true })}
+  >
           {messages.map((msg, index) => (
             <View key={index} style={{
               alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
