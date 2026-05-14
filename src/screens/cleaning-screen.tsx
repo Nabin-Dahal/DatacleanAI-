@@ -22,27 +22,26 @@ import { StatusBar } from 'expo-status-bar';
 
 // This prompt will be sent to Bubble AI to set the context and rules for how it should assist the user in cleaning their dataset.
 const BUBBLE_AI_SYSTEM_PROMPT = `
-You are Bubble AI, a specialized Data Cleaning Expert. 
-Your goal is to help the user clean messy datasets.
+You are Bubble AI, a Universal Data Engine. You work with ANY dataset.
 
-### DATA CONTEXT:
-- You will be provided with the "Headers" and the "First 5 Rows" of a dataset.
-- The file might contain up to 10,000 rows, so you must suggest logic that applies to the WHOLE column, not just the sample.
-
-### YOUR RULES:
-1. If the user asks a general question, respond in plain text.
-2. If the user asks to "Clean", "Delete", "Format", or "Edit" data, you MUST respond with a JSON object.
-3. Never guess data. If a column like "Latitude" is messy, suggest a way to verify it rather than making up numbers.
-
-### JSON OUTPUT FORMAT:
-When performing an action, your entire response must be a single JSON block:
+### THE TRUTH PROTOCOL:
+1. You have a summary, but for exact counts across 10,000+ rows, DO NOT GUESS.
+2. If you need an exact count to answer a user, respond ONLY with this JSON:
 {
-  "action": "TYPE_OF_ACTION",
-  "column": "COLUMN_NAME",
-  "logic": "DESCRIPTION_OF_CLEANING_LOGIC",
-  "message": "A brief explanation for the user"
+  "action": "QUERY",
+  "filter": "row['COLUMN_NAME'] > 90 && row['OTHER_COL'] == 'Value'",
+  "message": "Calculating the exact total for you..."
 }
+3. Once the app gives you the result, provide the final answer to the user.
+
+### RESPONSE RULE:
+If a user asks "How many..." or "Total...", always use the QUERY action first.
 `;
+
+const extractJson = (text: string) => {
+  const match = text.match(/\{[\s\S]*\}/);
+  return match ? match[0] : text;
+};
 
 
 const CleaningScreen = () => {
@@ -138,37 +137,58 @@ const getDataSummary = () => {
   if (data.length === 0) return "The dataset is currently empty.";
 
   const headers = Object.keys(data[0]);
-  
-  // 1. STATS ENGINE: Calculate counts for ALL columns automatically
-  // This gives Gemini the "answers" without sending 500 rows of text.
-  const stats = headers.reduce((acc: any, header) => {
-    const values = data.map(row => row[header]);
-    const uniqueCount = new Set(values).size;
+  const totalRows = data.length;
+  const summary: any = {};
+
+  headers.forEach((header) => {
+    const values = data.map(row => row[header]).filter(v => v !== undefined && v !== null && v !== "");
+    const uniqueValues = new Set(values);
     
-    // If a column has few unique values (like Gender), count them!
-    if (uniqueCount < 10) {
-      acc[header] = values.reduce((counts: any, v) => {
-        counts[v] = (counts[v] || 0) + 1;
-        return counts;
+    // 1. Check if it's a Numeric Column (Value)
+    const numericValues = values.map(v => parseFloat(v)).filter(v => !isNaN(v));
+    const isNumeric = numericValues.length > values.length * 0.8; // 80% threshold
+
+    if (isNumeric && numericValues.length > 0) {
+      const max = Math.max(...numericValues);
+      const min = Math.min(...numericValues);
+      const avg = numericValues.reduce((a, b) => a + b, 0) / numericValues.length;
+      
+      summary[header] = {
+        type: "QUANTITATIVE",
+        range: `${min} to ${max}`,
+        average: avg.toFixed(2),
+        details: `Stats based on ${numericValues.length} numeric entries.`
+      };
+    } 
+    // 2. Check if it's a Categorical Column (Groups)
+    else if (uniqueValues.size < 20) {
+      const counts = values.reduce((acc: any, v) => {
+        acc[v] = (acc[v] || 0) + 1;
+        return acc;
       }, {});
-    } else {
-      acc[header] = `Contains ${uniqueCount} unique values.`;
+      
+      summary[header] = {
+        type: "CATEGORICAL",
+        counts: counts
+      };
+    } 
+    // 3. Otherwise, it's a Label/Unique Identifier
+    else {
+      summary[header] = {
+        type: "LABEL",
+        uniqueCount: uniqueValues.size,
+        example: values[0]
+      };
     }
-    return acc;
-  }, {});
+  });
 
   return `
-    FACTS (Trust these for totals):
-    - Rows: ${data.length}
-    - Columns: ${headers.join(", ")}
-    - Detailed Stats: ${JSON.stringify(stats)}
-
-    SAMPLE (First 3 rows only):
-    ${data.slice(0, 3).map(row => JSON.stringify(Object.values(row))).join("\n")}
-
-    USER INSTRUCTION: Use the "Detailed Stats" above to answer counts/totals instantly.
+    [TOTAL RECORDS]: ${totalRows}
+    [COLUMN PROFILES]: ${JSON.stringify(summary, null, 2)}
+    [SAMPLE RECORD]: ${JSON.stringify(data[0])}
   `;
 };
+
 
 
 
@@ -266,54 +286,78 @@ const getDataSummary = () => {
 
 
   // ─── MESSAGE HANDLING LOGIC ──────────────────────────────────────
-  const handleSendMessage = async () => {
-    if (message.trim() === '') return;
+// 1. Add this Helper Function ABOVE your main component or at the top of the file
+// This handles the dirty work of cleaning AI JSON
 
-    const userText = message;
-    setMessage(''); // Clear input immediately for better UX
 
-    // 1. Add User's message to the chat
-    const newUserMessage = { role: "user", parts: [{ text: userText }] };
-    setMessages((prev) => [...prev, newUserMessage]);
+// 2. Replace your handleSendMessage with this TS-Friendly version
+// ─── MESSAGE HANDLING LOGIC ──────────────────────────────────────
 
-    // 2. Add a temporary "Thinking..." bubble so the user knows AI is working
-    const thinkingMessage = { role: "model", parts: [{ text: "Thinking..." }] };
-    setMessages((prev) => [...prev, thinkingMessage]);
+const handleSendMessage = async () => {
+  // 1. Check the 'message' state (your text input)
+  if (!message.trim()) return;
 
-    // 3. Call the Gemini Brain
-    const aiResponse = await callGeminiAI(userText);
-
-    // 4. Replace "Thinking..." with the actual AI response
-    setMessages((prev) => {
-      const chatHistory = [...prev];
-      chatHistory.pop(); // Remove the "Thinking..." bubble
-      return [...chatHistory, { role: "model", parts: [{ text: aiResponse }] }];
-    });
-
-    // 5. THE ACTION ENGINE: Check if Gemini sent a JSON command to edit data
-    try {
-      if (aiResponse.includes("{") && aiResponse.includes("}")) {
-        const jsonStart = aiResponse.indexOf("{");
-        const jsonEnd = aiResponse.lastIndexOf("}") + 1;
-        const jsonString = aiResponse.substring(jsonStart, jsonEnd);
-        
-        const cleanCommand = JSON.parse(jsonString);
-
-        // If it's a valid cleaning action, run the engine!
-        if (cleanCommand.action && cleanCommand.column) {
-          console.log("AI Action Detected:", cleanCommand.action);
-          applyCleaningAction(
-            cleanCommand.action, 
-            cleanCommand.column, 
-            cleanCommand.logic
-          );
-        }
-      }
-    } catch (e) {
-      console.log("No valid JSON action found in response.");
-    }
+  const userText = message;
+  const userMessage = { 
+    role: 'user', 
+    parts: [{ text: userText }] 
   };
 
+  // Update UI immediately
+  setMessages((prev) => [...prev, userMessage]);
+  setMessage(""); // Clear the input box
+
+  try {
+    // 2. Call your existing AI function
+    const aiResponseText = await callGeminiAI(userText);
+
+    try {
+      // 3. Check if the AI sent a QUERY command
+      const cleanedJson = extractJson(aiResponseText);
+      const parsed = JSON.parse(cleanedJson);
+
+      if (parsed.action === "QUERY") {
+        // Run the filter logic on your 'data' array
+        const filterFn = new Function('row', `return ${parsed.filter}`);
+        
+        const count = data.filter((row: any) => {
+          try { 
+            return filterFn(row); 
+          } catch (e) { 
+            return false; 
+          }
+        }).length;
+
+        // 4. Feed the TRUTH back to Gemini to get a natural answer
+        const truthPrompt = `The exact count for "${userText}" is ${count}. Give me a final natural answer.`;
+        const finalAnswer = await callGeminiAI(truthPrompt);
+        
+        setMessages((prev) => [...prev, { 
+          role: 'model', 
+          parts: [{ text: finalAnswer }] 
+        }]);
+      } else {
+        // Standard non-query response
+        setMessages((prev) => [...prev, { 
+          role: 'model', 
+          parts: [{ text: parsed.message || aiResponseText }] 
+        }]);
+      }
+    } catch (e) {
+      // If the response wasn't JSON, just show the text
+      setMessages((prev) => [...prev, { 
+        role: 'model', 
+        parts: [{ text: aiResponseText }] 
+      }]);
+    }
+  } catch (error) {
+    console.error("Chat Error:", error);
+    setMessages((prev) => [...prev, { 
+      role: 'model', 
+      parts: [{ text: "I'm sorry, I hit an error. Please try again." }] 
+    }]);
+  }
+};
 
 
   // ─── DYNAMIC UI RENDERING ──────────────────────────────────────
