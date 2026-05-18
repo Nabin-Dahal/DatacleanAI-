@@ -1,26 +1,27 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  TouchableOpacity, 
-  ActivityIndicator, 
-  FlatList, 
-  ScrollView,
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import * as FileSystem from 'expo-file-system/legacy';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as Sharing from 'expo-sharing';
+import { StatusBar } from 'expo-status-bar';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
   Alert,
-  TextInput, 
-  KeyboardAvoidingView, 
-  Platform 
+  FlatList,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams } from 'expo-router';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { supabase } from '../../supabaseClient'; 
 import { useAppTheme } from '../../constants/useAppTheme';
-import { StatusBar } from 'expo-status-bar';
+import { supabase } from '../../supabaseClient';
 
-
-// This prompt will be sent to Bubble AI to set the context and rules for how it should assist the user in cleaning their dataset.
 const BUBBLE_AI_SYSTEM_PROMPT = `
 You are Bubble AI, a Universal Data Engine. You work with ANY dataset.
 
@@ -33,9 +34,21 @@ You are Bubble AI, a Universal Data Engine. You work with ANY dataset.
   "message": "Calculating the exact total for you..."
 }
 3. Once the app gives you the result, provide the final answer to the user.
+### THE EDIT PROTOCOL (FOR CLEANING/CRUD):
+1. If the user asks to modify, update, clean, or delete data, respond ONLY with this JSON:
+{
+  "action": "EDIT",
+  "editType": "UPDATE" or "DELETE",
+  "column": "COLUMN_NAME_TO_FIX_OR_EMPTY_IF_DELETE",
+  "filter": "row['COLUMN_NAME'] == 'TargetValue'",
+  "logic": "row['COLUMN_NAME'].trim()" or "row['COLUMN_NAME'].toUpperCase()" or "VALUE",
+  "message": "Applying your requested data modifications..."
+}
+2. Use "UPDATE" to change values in a column. Use "DELETE" to remove entire rows matching the filter.
 
 ### RESPONSE RULE:
-If a user asks "How many..." or "Total...", always use the QUERY action first.
+- If a user asks "How many..." or "Total...", always use the QUERY action first.
+- If a user asks to clean, fix, update, or delete, always use the EDIT action first.
 `;
 
 const extractJson = (text: string) => {
@@ -43,67 +56,86 @@ const extractJson = (text: string) => {
   return match ? match[0] : text;
 };
 
-
 const CleaningScreen = () => {
   const insets = useSafeAreaInsets();
-  const { colors, isDark, spacing, radius } = useAppTheme();
+  const { colors, isDark } = useAppTheme();
   const router = useRouter();
   const { fileName } = useLocalSearchParams();
   const [message, setMessage] = useState('');
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isPreviewVisible, setIsPreviewVisible] = useState(false);
+  const [pendingEdit, setPendingEdit] = useState<{
+    editType: string;
+    column: string;
+    filter: string;
+    logic: string;
+  } | null>(null);
+  const [previewRows, setPreviewRows] = useState<Array<{ original: any; modified: any }>>([]);
+  const [history, setHistory] = useState<any[][]>([]);
+  const [redoStack, setRedoStack] = useState<any[][]>([]);
+  const [isSaving, setIsSaving] = useState(false);
   const chatScrollViewRef = useRef<ScrollView>(null);
 
+  const [messages, setMessages] = useState([
+    {
+      role: 'model',
+      parts: [{ text: "Hello! I'm Bubble AI, your data cleaning assistant. I see you've uploaded a dataset. How can I help you clean it today?" }]
+    },
+  ]);
 
-  // Initial system message to greet the user and set the context for Bubble AI
-const [messages, setMessages] = useState([
-  {
-  role: 'model',
-  parts: [{text: "Hello! I'm Bubble AI, your data cleaning assistant. I see you've uploaded a dataset. How can I help you clean it today?"
-
-  }]
-  },
-
-]);
-
-
-  // ─── UNTOUCHED DATA LOGIC ──────────────────────────────────────
+  // ─── SAFE DATA FETCH LOGIC ────────────────────────────────────────
   const fetchAndParseCSV = async () => {
     try {
       setLoading(true);
       console.log("Fetching latest dataset...");
 
-      // 1. Get the list of files to find the absolute latest upload
+      // 1. Explicitly fallback to parameter fileName if list check is empty
+      let actualCloudName = typeof fileName === 'string' ? fileName : '';
+
       const { data: fileList, error: listError } = await supabase.storage
         .from('datasets')
         .list('', { 
-          limit: 1, 
+          limit: 5, 
           sortBy: { column: 'created_at', order: 'desc' } 
         });
 
-      if (listError || !fileList || fileList.length === 0) {
+      if (!listError && fileList && fileList.length > 0) {
+        // Find a valid csv file name from the list
+        const csvFile = fileList.find(f => f.name.toLowerCase().endsWith('.csv'));
+        if (csvFile) {
+          actualCloudName = csvFile.name;
+        }
+      }
+
+      if (!actualCloudName) {
+        console.log("No file key target resolved yet.");
+        setData([]);
         setLoading(false);
         return;
       }
 
-      const actualCloudName = fileList[0].name;
+      console.log("Targeting cloud file identifier:", actualCloudName);
 
-      // 2. Generate a Signed URL (Bypasses Android Blob issues)
       const { data: urlData, error: urlError } = await supabase.storage
         .from('datasets')
         .createSignedUrl(actualCloudName, 60);
 
-      if (urlError || !urlData?.signedUrl) throw urlError;
+      if (urlError || !urlData?.signedUrl) {
+        throw new Error(urlError?.message || "Could not generate file access URL mapping link.");
+      }
 
-      // 3. Fetch the text directly from the link
       const response = await fetch(urlData.signedUrl);
+      if (!response.ok) {
+        throw new Error(`File download server responded with status: ${response.status}`);
+      }
+      
       const text = await response.text();
 
       if (!text || text.trim().length === 0) {
-        throw new Error("The file appears to be empty.");
+        throw new Error("The file downloaded appears to contain no data rows.");
       }
 
-      // 4. Parse CSV Text into JSON
       const lines = text.split('\n').map(l => l.trim()).filter(line => line !== '');
       
       if (lines.length > 0) {
@@ -120,8 +152,8 @@ const [messages, setMessages] = useState([
         setData(parsedRows);
       }
     } catch (err: any) {
-      console.error("Fetch Error:", err.message);
-      Alert.alert("Data Load Error", err.message);
+      console.error("Fetch Error Catch Layout:", err.message);
+      Alert.alert("Data Connection Notice", "We couldn't read the dataset directly from the cloud. Make sure the file exists in your Supabase 'datasets' bucket.");
     } finally {
       setLoading(false);
     }
@@ -131,382 +163,609 @@ const [messages, setMessages] = useState([
     fetchAndParseCSV();
   }, []);
 
+  const getDataSummary = () => {
+    if (data.length === 0) return "The dataset is currently empty.";
 
+    const headers = Object.keys(data[0]);
+    const totalRows = data.length;
+    const summary: any = {};
 
-const getDataSummary = () => {
-  if (data.length === 0) return "The dataset is currently empty.";
+    headers.forEach((header) => {
+      const values = data.map(row => row[header]).filter(v => v !== undefined && v !== null && v !== "");
+      const uniqueValues = new Set(values);
+      const numericValues = values.map(v => parseFloat(v)).filter(v => !isNaN(v));
+      const isNumeric = numericValues.length > values.length * 0.8;
 
-  const headers = Object.keys(data[0]);
-  const totalRows = data.length;
-  const summary: any = {};
+      if (isNumeric && numericValues.length > 0) {
+        const max = Math.max(...numericValues);
+        const min = Math.min(...numericValues);
+        const avg = numericValues.reduce((a, b) => a + b, 0) / numericValues.length;
+        
+        summary[header] = {
+          type: "QUANTITATIVE",
+          range: `${min} to ${max}`,
+          average: avg.toFixed(2),
+          details: `Stats based on ${numericValues.length} numeric entries.`
+        };
+      } else if (uniqueValues.size < 20) {
+        const counts = values.reduce((acc: any, v) => {
+          acc[v] = (acc[v] || 0) + 1;
+          return acc;
+        }, {});
+        
+        summary[header] = {
+          type: "CATEGORICAL",
+          counts: counts
+        };
+      } else {
+        summary[header] = {
+          type: "LABEL",
+          uniqueCount: uniqueValues.size,
+          example: values[0]
+        };
+      }
+    });
 
-  headers.forEach((header) => {
-    const values = data.map(row => row[header]).filter(v => v !== undefined && v !== null && v !== "");
-    const uniqueValues = new Set(values);
-    
-    // 1. Check if it's a Numeric Column (Value)
-    const numericValues = values.map(v => parseFloat(v)).filter(v => !isNaN(v));
-    const isNumeric = numericValues.length > values.length * 0.8; // 80% threshold
-
-    if (isNumeric && numericValues.length > 0) {
-      const max = Math.max(...numericValues);
-      const min = Math.min(...numericValues);
-      const avg = numericValues.reduce((a, b) => a + b, 0) / numericValues.length;
-      
-      summary[header] = {
-        type: "QUANTITATIVE",
-        range: `${min} to ${max}`,
-        average: avg.toFixed(2),
-        details: `Stats based on ${numericValues.length} numeric entries.`
-      };
-    } 
-    // 2. Check if it's a Categorical Column (Groups)
-    else if (uniqueValues.size < 20) {
-      const counts = values.reduce((acc: any, v) => {
-        acc[v] = (acc[v] || 0) + 1;
-        return acc;
-      }, {});
-      
-      summary[header] = {
-        type: "CATEGORICAL",
-        counts: counts
-      };
-    } 
-    // 3. Otherwise, it's a Label/Unique Identifier
-    else {
-      summary[header] = {
-        type: "LABEL",
-        uniqueCount: uniqueValues.size,
-        example: values[0]
-      };
-    }
-  });
-
-  return `
-    [TOTAL RECORDS]: ${totalRows}
-    [COLUMN PROFILES]: ${JSON.stringify(summary, null, 2)}
-    [SAMPLE RECORD]: ${JSON.stringify(data[0])}
-  `;
-};
-
-
-
-
-// ─── THE ACTION ENGINE: EDITING THE DATA ───────────────────────
- const applyCleaningAction = (action: string, column: string, logic: string) => {
-  const updatedData = data.map((row) => {
-    let value = String(row[column] || "");
-
-    if (action === "FIX_GENDER") {
-      return { ...row, [column]: value.charAt(0).toUpperCase() + value.slice(1).toLowerCase() };
-    }
-    if (action === "REMOVE_WHITESPACE") {
-      return { ...row, [column]: value.trim() };
-    }
-    // NEW: Generic Logic (Add more specific cases as you discover them!)
-    if (action === "CAPITALIZE_ALL") {
-      return { ...row, [column]: value.toUpperCase() };
-    }
-
-    return row; 
-  });
-
-  setData(updatedData);
-  Alert.alert("Data Updated", `Applied cleaning to: ${column}`);
-};
-
-
-
-
-
-
-
- // ─── THE BRAIN: CALLING GEMINI AI ──────────────────────────────
- const callGeminiAI = async (userPrompt: string) => {
-  try {
-   const dataSnapshot = getDataSummary(); 
-   
-   // Pulling the key from your .env file
-   const API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
-   
-   // Log to verify key is loaded (Should show 'true' in terminal)
-   console.log("API Key Loaded:", !!API_KEY); 
-
-   if (!API_KEY) {
-    return "Error: API Key is missing. Check your .env file and restart Expo.";
-   }
-
-   const API_URL = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
-
-   const fullPrompt = `
-    ${BUBBLE_AI_SYSTEM_PROMPT}
-    
-    HERE IS THE DATASET CONTEXT:
-    ${dataSnapshot}
-
-    USER COMMAND:
-    ${userPrompt}
-   `;
-
-   console.log("Sending to Gemini...");
-
-   const response = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-     contents: [{ parts: [{ text: fullPrompt }] }],
-     generationConfig: {
-       temperature: 0.1,
-       maxOutputTokens: 1000,
-     }
-    }),
-   });
-   if (response.status === 503 || response.status === 429) {
-  // Wait 2 seconds and retry once
-  await new Promise(res => setTimeout(res, 2000));
-  return callGeminiAI(userPrompt); 
-}
-
-   const result = await response.json();
-
-   if (result.candidates && result.candidates[0].content.parts[0].text) {
-    return result.candidates[0].content.parts[0].text;
-   } else {
-    console.error("Gemini Error Detail:", result);
-    return "I received an unexpected response format from the AI.";
-   }
-
-  } catch (err) {
-   console.error("Gemini Connection Error:", err);
-   return "I'm having trouble connecting to Gemini. Please check your connection.";
-  }
- };
-
-
-
-
-  // ─── MESSAGE HANDLING LOGIC ──────────────────────────────────────
-// 1. Add this Helper Function ABOVE your main component or at the top of the file
-// This handles the dirty work of cleaning AI JSON
-
-
-// 2. Replace your handleSendMessage with this TS-Friendly version
-// ─── MESSAGE HANDLING LOGIC ──────────────────────────────────────
-
-const handleSendMessage = async () => {
-  // 1. Check the 'message' state (your text input)
-  if (!message.trim()) return;
-
-  const userText = message;
-  const userMessage = { 
-    role: 'user', 
-    parts: [{ text: userText }] 
+    return `
+      [TOTAL RECORDS]: ${totalRows}
+      [COLUMN PROFILES]: ${JSON.stringify(summary, null, 2)}
+      [SAMPLE RECORD]: ${JSON.stringify(data[0])}
+    `;
   };
 
-  // Update UI immediately
-  setMessages((prev) => [...prev, userMessage]);
-  setMessage(""); // Clear the input box
-
-  try {
-    // 2. Call your existing AI function
-    const aiResponseText = await callGeminiAI(userText);
-
+  // ─── ACTION ENGINE ─────────────────────────────────────────────────
+  const applyCleaningAction = (action: string, column: string, filterStr: string, logicStr: string) => {
     try {
-      // 3. Check if the AI sent a QUERY command
-      const cleanedJson = extractJson(aiResponseText);
-      const parsed = JSON.parse(cleanedJson);
+      let updatedData = [...data];
 
-      if (parsed.action === "QUERY") {
-        // Run the filter logic on your 'data' array
-        const filterFn = new Function('row', `return ${parsed.filter}`);
-        
-        const count = data.filter((row: any) => {
-          try { 
-            return filterFn(row); 
-          } catch (e) { 
-            return false; 
+      if (action === "DELETE") {
+        const filterFn = new Function('row', `return ${filterStr || 'false'}`);
+        updatedData = data.filter((row) => {
+          try {
+            return !filterFn(row);
+          } catch (e) {
+            return true;
           }
-        }).length;
-
-        // 4. Feed the TRUTH back to Gemini to get a natural answer
-        const truthPrompt = `The exact count for "${userText}" is ${count}. Give me a final natural answer.`;
-        const finalAnswer = await callGeminiAI(truthPrompt);
+        });
+        Alert.alert("Rows Deleted", "Matching records have been removed from your local view.");
+      } else if (action === "UPDATE") {
+        const filterFn = filterStr ? new Function('row', `return ${filterStr}`) : () => true;
         
-        setMessages((prev) => [...prev, { 
-          role: 'model', 
-          parts: [{ text: finalAnswer }] 
-        }]);
-      } else {
-        // Standard non-query response
-        setMessages((prev) => [...prev, { 
-          role: 'model', 
-          parts: [{ text: parsed.message || aiResponseText }] 
-        }]);
+        updatedData = data.map((row) => {
+          if (!filterFn(row)) return row;
+
+          let value = String(row[column] || "");
+          let newValue = value;
+
+          if (logicStr && logicStr.includes('row[')) {
+            try {
+              const dynamicLogicFn = new Function('row', `return ${logicStr}`);
+              newValue = String(dynamicLogicFn(row));
+            } catch (e) {
+              newValue = value;
+            }
+          } else {
+            newValue = logicStr;
+          }
+
+          return { ...row, [column]: newValue };
+        });
+
+        Alert.alert("Data Updated", `Applied cleaning modifications to column: ${column}`);
       }
-    } catch (e) {
-      // If the response wasn't JSON, just show the text
-      setMessages((prev) => [...prev, { 
-        role: 'model', 
-        parts: [{ text: aiResponseText }] 
-      }]);
+
+      setData(updatedData);
+
+    } catch (globalError: any) {
+      console.error("CRUD Engine Error:", globalError);
+      Alert.alert("Execution Error", "Could not complete the data modification step.");
     }
-  } catch (error) {
-    console.error("Chat Error:", error);
+  };
+
+  const handleConfirmEdit = () => {
+    if (!pendingEdit) return;
+    setHistory((prev) => [...prev, [...data]]);
+    setRedoStack([]);
+
+    applyCleaningAction(
+      pendingEdit.editType,
+      pendingEdit.column,
+      pendingEdit.filter,
+      pendingEdit.logic
+    );
+
+    setIsPreviewVisible(false);
+    setPendingEdit(null);
+    setPreviewRows([]);
+  };
+
+  const handleUndo = () => {
+    if (history.length === 0) return;
+    const previousState = history[history.length - 1];
+    setRedoStack((prev) => [...prev, [...data]]);
+    setData(previousState);
+    setHistory((prev) => prev.slice(0, -1));
+
     setMessages((prev) => [...prev, { 
       role: 'model', 
-      parts: [{ text: "I'm sorry, I hit an error. Please try again." }] 
+      parts: [{ text: "↩️ Undo applied! I've reverted your last data change." }] 
     }]);
-  }
-};
+  };
 
+  const handleRedo = () => {
+    if (redoStack.length === 0) return;
+    const nextState = redoStack[redoStack.length - 1];
+    setHistory((prev) => [...prev, [...data]]);
+    setData(nextState);
+    setRedoStack((prev) => prev.slice(0, -1));
 
-  // ─── DYNAMIC UI RENDERING ──────────────────────────────────────
-  return (
-  <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
-    <StatusBar style="light" />
+    setMessages((prev) => [...prev, { 
+      role: 'model', 
+      parts: [{ text: "↪️ Redo applied! I've re-executed your change." }] 
+    }]);
+  };
 
-    {/* 1. KEYBOARD AVOIDING VIEW WRAPS EVERYTHING */}
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      style={{ flex: 1 }}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? -30 : 0} // Using your HomeScreen "Golden" settings
-    >
+  const callGeminiAI = async (userPrompt: string) => {
+    try {
+      const dataSnapshot = getDataSummary(); 
+      const API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+
+      if (!API_KEY) {
+        return "Error: API Key is missing. Check your .env file and restart Expo.";
+      }
+
+      const API_URL = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
+      const fullPrompt = `${BUBBLE_AI_SYSTEM_PROMPT}\n\nHERE IS THE DATASET CONTEXT:\n${dataSnapshot}\n\nUSER COMMAND:\n${userPrompt}`;
+
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: fullPrompt }] }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 1000 }
+        }),
+      });
+
+      if (response.status === 503 || response.status === 429) {
+        await new Promise(res => setTimeout(res, 2000));
+        return callGeminiAI(userPrompt); 
+      }
+
+      const result = await response.json();
+
+      if (result.candidates && result.candidates[0].content.parts[0].text) {
+        return result.candidates[0].content.parts[0].text;
+      } else {
+        return "I received an unexpected response format from the AI.";
+      }
+    } catch (err) {
+      return "I'm having trouble connecting to Gemini. Please check your connection.";
+    }
+  };
+
+  const handleSendMessage = async () => {
+    if (!message.trim()) return;
+
+    const userText = message;
+    setMessages((prev) => [...prev, { role: 'user', parts: [{ text: userText }] }]);
+    setMessage(""); 
+
+    try {
+      const aiResponseText = await callGeminiAI(userText);
+
+      try {
+        const cleanedJson = extractJson(aiResponseText);
+        const parsed = JSON.parse(cleanedJson);
+
+        if (parsed.action === "QUERY") {
+          const filterFn = new Function('row', `return ${parsed.filter}`);
+          const count = data.filter((row: any) => {
+            try { return filterFn(row); } catch (e) { return false; }
+          }).length;
+
+          const truthPrompt = `The exact count for "${userText}" is ${count}. Give me a final natural answer.`;
+          const finalAnswer = await callGeminiAI(truthPrompt);
+          
+          setMessages((prev) => [...prev, { role: 'model', parts: [{ text: finalAnswer }] }]);
+        } else if (parsed.action === "EDIT") {
+          setPendingEdit({
+            editType: parsed.editType,
+            column: parsed.column,
+            filter: parsed.filter,
+            logic: parsed.logic
+          });
+
+          const filterFn = parsed.filter ? new Function('row', `return ${parsed.filter}`) : () => true;
+          const sampleAffected: any[] = [];
+          
+          for (const row of data) {
+            if (filterFn(row)) {
+              sampleAffected.push(row);
+              if (sampleAffected.length >= 3) break;
+            }
+          }
+
+          const generatedPreviews = sampleAffected.map((row) => {
+            let originalValue = String(row[parsed.column] || "");
+            let newValue = originalValue;
+
+            if (parsed.editType === "UPDATE") {
+              if (parsed.logic && parsed.logic.includes('row[')) {
+                try {
+                  const dynamicLogicFn = new Function('row', `return ${parsed.logic}`);
+                  newValue = String(dynamicLogicFn(row));
+                } catch (e) {
+                  newValue = originalValue;
+                }
+              } else {
+                newValue = parsed.logic;
+              }
+            } else if (parsed.editType === "DELETE") {
+              newValue = "❌ ROW WILL BE DELETED";
+            }
+
+            return {
+              original: row,
+              modified: { ...row, [parsed.column]: newValue }
+            };
+          });
+
+          setPreviewRows(generatedPreviews);
+          setIsPreviewVisible(true);
+
+          setMessages((prev) => [...prev, { 
+            role: 'model', 
+            parts: [{ text: `🔄 Reviewing requested adjustments... Check the modal on your screen.` }] 
+          }]);
+        } else {
+          setMessages((prev) => [...prev, { role: 'model', parts: [{ text: parsed.message || aiResponseText }] }]);
+        }
+      } catch (e) {
+        setMessages((prev) => [...prev, { role: 'model', parts: [{ text: aiResponseText }] }]);
+      }
+    } catch (error) {
+      setMessages((prev) => [...prev, { role: 'model', parts: [{ text: "I'm sorry, I hit an error. Please try again." }] }]);
+    }
+  };
+
+  // ─── HARMONIZED EXPORT ENGINE (FIXED RUNTIME PATHS) ─────────────────
+  const handleExportAndDownload = async () => {
+    if (!data || data.length === 0) {
+      Alert.alert("No Data Available", "There are no rows in your current table view to export.");
+      return;
+    }
+    
+    setIsSaving(true);
+    try {
+      const headers = Object.keys(data[0]);
+      const csvRows = [
+        headers.join(','),
+        ...data.map(row => 
+          headers.map(fieldName => {
+            const value = row[fieldName] === null || row[fieldName] === undefined ? '' : row[fieldName];
+            const stringVal = typeof value === 'object' ? JSON.stringify(value) : String(value);
+            return `"${stringVal.replace(/"/g, '""')}"`;
+          }).join(',')
+        )
+      ];
+      const csvString = csvRows.join('\n');
+
+      // Enforce safe string names
+      const rawName = typeof fileName === 'string' && fileName.trim().length > 0 ? fileName : 'dataset.csv';
+      const safeFileName = rawName.replace(/%20/g, '_').replace(/\s+/g, '_');
+
+      console.log("Saving back modified rows via name string:", safeFileName);
+
+      // 1. Upload safely back to Supabase Core Bucket
+      const { error: uploadError } = await supabase.storage
+        .from('datasets') 
+        .upload(safeFileName, csvString, {
+          contentType: 'text/csv',
+          upsert: true
+        });
+
+      if (uploadError) throw uploadError;
+
+      // 2. FIXED PATH RESOLUTION FOR EXPO ANDROID SYSTEM CONTEXT
+      // Use any-cast for both properties to avoid TS errors
+      let targetDirectory = (FileSystem as any).documentDirectory || (FileSystem as any).cacheDirectory;
       
-      {/* 2. HEADER AREA */}
-      <View style={[styles.header, { backgroundColor: colors.background }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <MaterialCommunityIcons name="arrow-left" size={28} color={colors.textPrimary} />
-        </TouchableOpacity>
-        <View>
-          <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>AI Cleaning Hub</Text>
-          <Text style={[styles.subtitle, { color: colors.accent }]}>{fileName || 'Dataset Preview'}</Text>
-        </View>
-      </View>
+      // CRITICAL RUNTIME FIX: If Expo fails to provide a directory, force the standard Android Expo cache path
+      if (!targetDirectory) {
+        console.warn("Expo storage directories returned null. Forcing Android Expo Go cache directory.");
+        targetDirectory = 'file:///data/user/0/host.exp.exponent/cache/';
+      }
+      
+      // Ensure path separation handling is absolutely correct
+      const localUri = targetDirectory.endsWith('/') 
+        ? `${targetDirectory}${safeFileName}`
+        : `${targetDirectory}/${safeFileName}`;
+      
+      // 3. Write data using explicit SDK native calls directly
+      // Use explicit string for encoding to avoid TypeScript errors when
+      // the EncodingType enum isn't available from expo-file-system types.
+      await FileSystem.writeAsStringAsync(localUri, csvString, {
+        encoding: 'utf8',
+      });
 
-      {/* 3. MAIN CONTENT (TABLE) - Set to flex: 1 so it shrinks when keyboard opens */}
-      <View style={[
-  styles.content, 
-  { 
-    // If messages > 1 (meaning user has started chatting), shrink the table
-    flex: messages.length > 1 ? 0.6 : 1.2, 
-    backgroundColor: colors.surface, 
-    borderColor: colors.border 
-  }
-]}>
-        {loading ? (
-          <View style={styles.center}>
-            <ActivityIndicator size="large" color={colors.accent} />
-            <Text style={[styles.loadingText, { color: colors.textMuted }]}>Reading Dataset...</Text>
-          </View>
-        ) : data.length > 0 ? (
-          <ScrollView horizontal showsHorizontalScrollIndicator={true}>
-            <View>
-              {/* Dynamic Table Header */}
-              <View style={[styles.tableHeader, { backgroundColor: colors.surface, borderBottomColor: colors.accent }]}>
-                {Object.keys(data[0]).map((key) => (
-                  <View key={key} style={[styles.headerCell, { borderRightColor: colors.border }]}>
-                    <Text style={[styles.headerText, { color: colors.accent }]}>{key}</Text>
-                  </View>
-                ))}
-              </View>
+      // 4. Fire sharing context safely
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(localUri, {
+          mimeType: 'text/csv',
+          dialogTitle: 'Download Cleaned Dataset',
+          UTI: 'public.comma-separated-values-text'
+        });
+      } else {
+        Alert.alert("Saved Successfully", `Dataset saved to your account cloud storage as: ${safeFileName}`);
+      }
 
-              {/* Data Rows */}
-              <FlatList
-                data={data}
-                extraData={data} // Force re-render when data changes
-                keyExtractor={(_, index) => index.toString()}
-                renderItem={({ item }) => (
-                  <View style={[styles.tableRow, { borderBottomColor: colors.border }]}>
-                    {Object.values(item).map((val: any, i) => (
-                      <View key={i} style={[styles.cell, { borderRightColor: colors.border }]}>
-                        <Text style={[styles.cellText, { color: colors.textPrimary }]} numberOfLines={1}>
-                          {val}
-                        </Text>
-                      </View>
-                    ))}
-                  </View>
-                )}
-              />
+      setMessages((prev) => [...prev, { 
+        role: 'model', 
+        parts: [{ text: `💾 **File Saved!** Your data has been backed up to Supabase as **${safeFileName}** and sent to your phone storage.` }] 
+      }]);
+
+    } catch (error: any) {
+      console.error("Export Engine Crash Logs:", error);
+      Alert.alert("Export Failed", error.message || "Unknown file handling error");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+
+
+
+
+
+
+
+
+
+  return (
+    <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
+      <StatusBar style="light" />
+
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? -30 : 0}
+      >
+        {/* HEADER AREA */}
+        <View style={[styles.header, { backgroundColor: colors.background, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingRight: 15 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+              <MaterialCommunityIcons name="arrow-left" size={28} color={colors.textPrimary} />
+            </TouchableOpacity>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>AI Cleaning Hub</Text>
+              <Text numberOfLines={1} style={[styles.subtitle, { color: colors.accent }]}>{fileName || 'Dataset Preview'}</Text>
             </View>
+          </View>
+
+          <TouchableOpacity 
+            onPress={handleExportAndDownload}
+            disabled={isSaving}
+            style={{
+              padding: 8,
+              borderRadius: 8,
+              backgroundColor: isSaving ? colors.surface : colors.accentSoft,
+              marginLeft: 10
+            }}
+          >
+            {isSaving ? (
+              <ActivityIndicator size="small" color={colors.accent} />
+            ) : (
+              <MaterialCommunityIcons name="download" size={24} color={colors.accent} />
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* MAIN CONTENT TABLE */}
+        <View style={[
+          styles.content, 
+          { 
+            flex: messages.length > 1 ? 0.6 : 1.2, 
+            backgroundColor: colors.surface, 
+            borderColor: colors.border 
+          }
+        ]}>
+          {loading ? (
+            <View style={styles.center}>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={[styles.loadingText, { color: colors.textMuted }]}>Reading Dataset...</Text>
+            </View>
+          ) : data.length > 0 ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={true}>
+              <View>
+                <View style={[styles.tableHeader, { backgroundColor: colors.surface, borderBottomColor: colors.accent }]}>
+                  {Object.keys(data[0]).map((key) => (
+                    <View key={key} style={[styles.headerCell, { borderRightColor: colors.border }]}>
+                      <Text style={[styles.headerText, { color: colors.accent }]}>{key}</Text>
+                    </View>
+                  ))}
+                </View>
+
+                <FlatList
+                  data={data}
+                  extraData={data}
+                  keyExtractor={(_, index) => index.toString()}
+                  renderItem={({ item }) => (
+                    <View style={[styles.tableRow, { borderBottomColor: colors.border }]}>
+                      {Object.values(item).map((val: any, i) => (
+                        <View key={i} style={[styles.cell, { borderRightColor: colors.border }]}>
+                          <Text style={[styles.cellText, { color: colors.textPrimary }]} numberOfLines={1}>
+                            {val}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                />
+              </View>
+            </ScrollView>
+          ) : (
+            <View style={styles.center}>
+               <MaterialCommunityIcons name="database-off" size={60} color={colors.textMuted} />
+               <Text style={[styles.placeholder, { color: colors.textMuted }]}>No dataset rows loaded to view.</Text>
+            </View>
+          )}
+        </View>
+
+        {/* CHAT AREA */}
+        <View style={{ flex: messages.length > 1 ? 1.4 : 0.4, marginBottom: 5 }}>
+          <ScrollView 
+            contentContainerStyle={{ paddingHorizontal: 15, paddingVertical: 10 }}
+            showsVerticalScrollIndicator={true}
+            ref={chatScrollViewRef}
+            onContentSizeChange={() => chatScrollViewRef.current?.scrollToEnd({ animated: true })}
+          >
+            {messages.map((msg, index) => (
+              <View key={index} style={{
+                alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                backgroundColor: msg.role === 'user' ? colors.accent : colors.surface,
+                padding: 12,
+                borderRadius: 15,
+                marginBottom: 8,
+                maxWidth: '85%',
+                borderWidth: msg.role === 'model' ? 1 : 0,
+                borderColor: colors.border
+              }}>
+                <Text style={{ color: msg.role === 'user' ? 'white' : colors.textPrimary, fontSize: 13 }}>
+                  {msg.parts[0].text}
+                </Text>
+              </View>
+            ))}
           </ScrollView>
-        ) : (
-          <View style={styles.center}>
-             <MaterialCommunityIcons name="database-off" size={60} color={colors.textMuted} />
-             <Text style={[styles.placeholder, { color: colors.textMuted }]}>No data found.</Text>
+        </View>
+
+        {/* HISTORIC UNDO / REDO FLOATING BAR */}
+        {(history.length > 0 || redoStack.length > 0) && (
+          <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 10, gap: 12 }}>
+            {history.length > 0 && (
+              <TouchableOpacity onPress={handleUndo} activeOpacity={0.7} style={[styles.controlBtn, { backgroundColor: isDark ? '#374151' : '#E5E7EB', borderColor: isDark ? '#4B5563' : '#D1D5DB' }]}>
+                <Text style={{ fontSize: 14, marginRight: 4 }}>↩️</Text>
+                <Text style={{ fontSize: 12, fontWeight: '600', color: isDark ? '#E5E7EB' : '#374151' }}>Undo ({history.length})</Text>
+              </TouchableOpacity>
+            )}
+            {redoStack.length > 0 && (
+              <TouchableOpacity onPress={handleRedo} activeOpacity={0.7} style={[styles.controlBtn, { backgroundColor: isDark ? '#374151' : '#E5E7EB', borderColor: isDark ? '#4B5563' : '#D1D5DB' }]}>
+                <Text style={{ fontSize: 12, fontWeight: '600', color: isDark ? '#E5E7EB' : '#374151' }}>Redo ({redoStack.length})</Text>
+                <Text style={{ fontSize: 14, marginLeft: 4 }}>↪️</Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
-      </View>
 
-      {/* 4. CHAT MESSAGES AREA */}
-      <View style={{ 
-  // If messages > 1, grow the chat area to take more space
-  flex: messages.length > 1 ? 1.4 : 0.4, 
-  marginBottom: 5 
-}}>
-        <ScrollView 
-    contentContainerStyle={{ paddingHorizontal: 15, paddingVertical: 10 }}
-    showsVerticalScrollIndicator={true}
-    // Autoscroll to bottom code
-    ref={chatScrollViewRef}
-    onContentSizeChange={() => chatScrollViewRef.current?.scrollToEnd({ animated: true })}
-  >
-          {messages.map((msg, index) => (
-            <View key={index} style={{
-              alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-              backgroundColor: msg.role === 'user' ? colors.accent : colors.surface,
-              padding: 12,
-              borderRadius: 15,
-              marginBottom: 8,
-              maxWidth: '85%',
-              borderWidth: msg.role === 'model' ? 1 : 0,
-              borderColor: colors.border
-            }}>
-              <Text style={{ color: msg.role === 'user' ? 'white' : colors.textPrimary, fontSize: 13 }}>
-                {msg.parts[0].text}
-              </Text>
+        {/* CHAT INPUT BAR */}
+        <View style={[styles.chatContainer, { backgroundColor: colors.surface, borderColor: colors.border, marginBottom: 10, marginHorizontal: 15 }]}>
+          <TouchableOpacity style={[styles.magicButton, { backgroundColor: colors.background }]}>
+            <MaterialCommunityIcons name="auto-fix" size={20} color={colors.accent} />
+          </TouchableOpacity>
+
+          <TextInput
+            style={[styles.input, { color: colors.textPrimary, flex: 1 }]}
+            placeholder="Ask Bubble AI..."
+            placeholderTextColor={colors.textMuted}
+            value={message}
+            onChangeText={setMessage}
+            onSubmitEditing={handleSendMessage} 
+          />
+
+          <TouchableOpacity style={{ marginRight: 15 }}>
+            <MaterialCommunityIcons name="microphone" size={22} color={colors.accent} />
+          </TouchableOpacity>
+
+          <TouchableOpacity onPress={handleSendMessage} style={[styles.sendButton , { backgroundColor: colors.accent }]}>
+            <MaterialCommunityIcons name="arrow-up" size={20} color="white" />
+          </TouchableOpacity>
+        </View>
+
+        {Platform.OS === 'ios' && <View style={{ height: insets.bottom + 10 }} />}
+      </KeyboardAvoidingView>
+      {Platform.OS === 'android' && <View style={{ height: insets.bottom + 10 }} />}
+
+      {/* PREVIEW MODAL */}
+      <Modal
+        visible={isPreviewVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setIsPreviewVisible(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' }}>
+          <View style={{ 
+            backgroundColor: isDark ? '#1F2937' : '#FFFFFF', 
+            borderTopLeftRadius: 20, 
+            borderTopRightRadius: 20, 
+            padding: 20, 
+            maxHeight: '80%',
+            borderTopWidth: 1,
+            borderTopColor: isDark ? '#374151' : '#E5E7EB'
+          }}>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', color: isDark ? '#FFFFFF' : '#111827', marginBottom: 5 }}>
+              🛠️ Review Data Adjustments
+            </Text>
+            <Text style={{ fontSize: 14, color: isDark ? '#9CA3AF' : '#4B5563', marginBottom: 15 }}>
+              Bubble AI wants to apply a <Text style={{ fontWeight: 'bold', color: '#3B82F6' }}>{pendingEdit?.editType}</Text> operation.
+            </Text>
+
+            <ScrollView style={{ marginBottom: 20 }} showsVerticalScrollIndicator={false}>
+              {previewRows.map((item, index) => (
+                <View key={index} style={{ 
+                  marginBottom: 15, 
+                  padding: 12, 
+                  borderRadius: 8, 
+                  backgroundColor: isDark ? '#2D3748' : '#F3F4F6',
+                  borderWidth: 1,
+                  borderColor: isDark ? '#4A5568' : '#E5E7EB'
+                }}>
+                  <Text style={{ fontSize: 11, fontWeight: 'bold', color: isDark ? '#A0AEC0' : '#718096', marginBottom: 6, letterSpacing: 0.5 }}>
+                    SAMPLE ROW {index + 1}
+                  </Text>
+                  
+                  <View style={{ flexDirection: 'row', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: isDark ? '#4A5568' : '#E5E7EB' }}>
+                    <Text style={{ width: 65, fontSize: 12, fontWeight: 'bold', color: '#EF4444' }}>BEFORE:</Text>
+                    <Text style={{ flex: 1, fontSize: 12, color: isDark ? '#E5E7EB' : '#1F2937' }} numberOfLines={2}>
+                      {pendingEdit?.column 
+                        ? `${pendingEdit.column}: ${item.original[pendingEdit.column]}` 
+                        : Object.entries(item.original).map(([key, val]) => `${key}: ${val}`).join(' | ')
+                      }
+                    </Text>
+                  </View>
+
+                  <View style={{ flexDirection: 'row', paddingVertical: 6, marginTop: 4 }}>
+                    <Text style={{ width: 65, fontSize: 12, fontWeight: 'bold', color: '#10B981' }}>AFTER:</Text>
+                    <Text style={{ flex: 1, fontSize: 12, color: isDark ? '#E5E7EB' : '#1F2937' }} numberOfLines={2}>
+                      {pendingEdit?.column 
+                        ? `${pendingEdit.column}: ${item.modified[pendingEdit.column]}` 
+                        : Object.entries(item.modified).map(([key, val]) => `${key}: ${val}`).join(' | ')
+                      }
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+
+            <View style={{ flexDirection: 'row', gap: 12, marginBottom: insets.bottom }}>
+              <TouchableOpacity 
+                onPress={() => setIsPreviewVisible(false)}
+                style={{ flex: 1, padding: 14, borderRadius: 12, backgroundColor: isDark ? '#374151' : '#E5E7EB', alignItems: 'center' }}
+              >
+                <Text style={{ fontWeight: '600', color: isDark ? '#E5E7EB' : '#374151' }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                onPress={handleConfirmEdit}
+                style={{ flex: 2, padding: 14, borderRadius: 12, backgroundColor: '#10B981', alignItems: 'center' }}
+              >
+                <Text style={{ fontWeight: 'bold', color: 'white' }}>Confirm & Apply Changes</Text>
+              </TouchableOpacity>
             </View>
-          ))}
-        </ScrollView>
-      </View>
-
-      {/* 5. INPUT BAR AREA */}
-      <View style={[styles.chatContainer, { backgroundColor: colors.surface, borderColor: colors.border, marginBottom: 10, marginHorizontal: 15 }]}>
-        <TouchableOpacity style={[styles.magicButton, { backgroundColor: colors.background }]}>
-          <MaterialCommunityIcons name="auto-fix" size={20} color={colors.accent} />
-        </TouchableOpacity>
-
-        <TextInput
-          style={[styles.input, { color: colors.textPrimary, flex: 1 }]}
-          placeholder="Ask Bubble AI..."
-          placeholderTextColor={colors.textMuted}
-          value={message}
-          onChangeText={setMessage}
-          onSubmitEditing={handleSendMessage} 
-        />
-
-        <TouchableOpacity style={{ marginRight: 15 }}>
-          <MaterialCommunityIcons name="microphone" size={22} color={colors.accent} />
-        </TouchableOpacity>
-
-        <TouchableOpacity 
-          onPress={handleSendMessage}
-          style={[styles.sendButton , { backgroundColor: colors.accent }]}
-        >
-          <MaterialCommunityIcons name="arrow-up" size={20} color="white" />
-        </TouchableOpacity>
-      </View>
-
-      {/* Space for the bottom inset */}
-       {Platform.OS === 'ios' && <View style={{ height: insets.bottom + 10 }} />}
-      
-
-    </KeyboardAvoidingView>
-    {Platform.OS === 'android' && <View style={{ height: insets.bottom + 10 }} />}
-  </View>
-);
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
 };
 
-// ─── STYLES (Hardcoded colors removed, layout kept intact) ──────
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -615,6 +874,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 15,
     fontSize: 15,
     height: 40,
+  },
+  controlBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 14,
+    borderWidth: 1,
   },
   sendButton: {
     width: 40,
