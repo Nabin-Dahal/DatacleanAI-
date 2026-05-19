@@ -25,30 +25,81 @@ import { supabase } from '../../supabaseClient';
 const BUBBLE_AI_SYSTEM_PROMPT = `
 You are Bubble AI, a Universal Data Engine. You work with ANY dataset.
 
-### THE TRUTH PROTOCOL:
-1. You have a summary, but for exact counts across 10,000+ rows, DO NOT GUESS.
-2. If you need an exact count to answer a user, respond ONLY with this JSON:
+### THE TRUTH & VALIDATION PROTOCOL:
+1. SCHEMA VERIFICATION & TYPO HANDLING: You will be provided with the current dataset's column headers. 
+   - You MUST handle case-insensitivity and minor typos gracefully. For example, if the schema contains "Gender" and the user types "gender" or "gendr", auto-correct it to the exact schema name ("Gender") when generating the JSON payload.
+   - ONLY reject the request and respond conversationally if the column name they typed is completely unrecognizable or matches absolutely nothing in the schema.
+2. AMBIGUITY GUARD: If a user request is ambiguous (e.g., "clean the data", "remove bad rows"), do not guess the filter criteria. Respond conversationally asking them to specify exactly which columns or values they want to target.
+3. EXACT COUNTS: You have a summary, but for exact counts across 10,000+ rows, DO NOT GUESS. If you need an exact count to answer a user, respond ONLY with this JSON:
 {
   "action": "QUERY",
   "filter": "row['COLUMN_NAME'] > 90 && row['OTHER_COL'] == 'Value'",
   "message": "Calculating the exact total for you..."
 }
-3. Once the app gives you the result, provide the final answer to the user.
-### THE EDIT PROTOCOL (FOR CLEANING/CRUD):
-1. If the user asks to modify, update, clean, or delete data, respond ONLY with this JSON:
+
+### THE EDIT PROTOCOL (FOR CLEANING & MANIPULATION):
+If the user asks to modify, update, clean, delete, or add data, and the columns are VALID, respond ONLY with a single JSON object matching one of these types:
+
+1. FOR UPDATING EXISTING VALUES (UPDATE):
 {
   "action": "EDIT",
-  "editType": "UPDATE" or "DELETE",
-  "column": "COLUMN_NAME_TO_FIX_OR_EMPTY_IF_DELETE",
+  "editType": "UPDATE",
+  "column": "COLUMN_NAME",
   "filter": "row['COLUMN_NAME'] == 'TargetValue'",
-  "logic": "row['COLUMN_NAME'].trim()" or "row['COLUMN_NAME'].toUpperCase()" or "VALUE",
-  "message": "Applying your requested data modifications..."
+  "logic": "row['COLUMN_NAME'].trim()" or "VALUE",
+  "message": "Applying requested data modifications..."
 }
-2. Use "UPDATE" to change values in a column. Use "DELETE" to remove entire rows matching the filter.
+
+2. FOR REMOVING ROWS (DELETE):
+{
+  "action": "EDIT",
+  "editType": "DELETE",
+  "column": "",
+  "filter": "row['COLUMN_NAME'] == 'TargetValue'",
+  "logic": "",
+  "message": "Removing matching records from the dataset..."
+}
+
+3. FOR CREATING A NEW COLUMN (ADD_COLUMN):
+- If derived from other columns, "logic" must be a JS string expression like: "row['ColA'] + ' ' + row['ColB']"
+- If it is a completely fresh/static column, "logic" must be a static value string enclosed in quotes like: "'Pending'" or "'No'"
+- If it should be completely blank, "logic" must be an empty string: ""
+{
+  "action": "EDIT",
+  "editType": "ADD_COLUMN",
+  "column": "NEW_COLUMN_NAME",
+  "filter": "",
+  "logic": "FORMULA_OR_STATIC_VALUE_OR_EMPTY",
+  "message": "Creating the new column in your dataset..."
+}
+
+4. FOR INSERTING A NEW ROW (ADD_ROW):
+- Provide a full dictionary mapping of the data to add. 
+- You MUST look at the current dataset headers. For any column the user doesn't mention, set its value to an empty string "".
+{
+  "action": "EDIT",
+  "editType": "ADD_ROW",
+  "rowData": {
+    "COLUMN_1": "User value",
+    "COLUMN_2": "",
+    "COLUMN_3": "User value"
+  },
+  "message": "Inserting a new custom record into the dataset..."
+}
+
+5. FOR DELETING AN ENTIRE COLUMN (DROP_COLUMN):
+{
+  "action": "EDIT",
+  "editType": "DROP_COLUMN",
+  "column": "COLUMN_NAME_TO_DELETE",
+  "filter": "",
+  "logic": "",
+  "message": "Completely dropping the requested column from the schema..."
+}
 
 ### RESPONSE RULE:
-- If a user asks "How many..." or "Total...", always use the QUERY action first.
-- If a user asks to clean, fix, update, or delete, always use the EDIT action first.
+- Never include conversational prose alongside a JSON block. If an action is valid, return ONLY the raw JSON object.
+- If a column is missing or the intent is completely ambiguous, follow the VALIDATION PROTOCOL and return ONLY conversational text helping the user.
 `;
 
 const extractJson = (text: string) => {
@@ -221,19 +272,14 @@ const CleaningScreen = () => {
       if (action === "DELETE") {
         const filterFn = new Function('row', `return ${filterStr || 'false'}`);
         updatedData = data.filter((row) => {
-          try {
-            return !filterFn(row);
-          } catch (e) {
-            return true;
-          }
+          try { return !filterFn(row); } catch (e) { return true; }
         });
         Alert.alert("Rows Deleted", "Matching records have been removed from your local view.");
+
       } else if (action === "UPDATE") {
         const filterFn = filterStr ? new Function('row', `return ${filterStr}`) : () => true;
-        
         updatedData = data.map((row) => {
           if (!filterFn(row)) return row;
-
           let value = String(row[column] || "");
           let newValue = value;
 
@@ -247,12 +293,47 @@ const CleaningScreen = () => {
           } else {
             newValue = logicStr;
           }
-
           return { ...row, [column]: newValue };
         });
-
         Alert.alert("Data Updated", `Applied cleaning modifications to column: ${column}`);
-      }
+
+      } else if (action === "ADD_COLUMN") {
+        // Build out the brand new column key across all existing data objects
+        updatedData = data.map((row) => {
+          let evaluatedValue = "";
+          if (logicStr && logicStr.includes('row[')) {
+            try {
+              const dynamicLogicFn = new Function('row', `return ${logicStr}`);
+              evaluatedValue = String(dynamicLogicFn(row));
+            } catch (e) {
+              evaluatedValue = "";
+            }
+          } else {
+            // Strip structural wrapper quotes from static strings if present
+            evaluatedValue = typeof logicStr === 'string' 
+              ? logicStr.replace(/^'|'$/g, '') 
+              : String(logicStr || "");
+          }
+          return { ...row, [column]: evaluatedValue };
+        });
+        Alert.alert("Column Created", `Successfully injected new column header: "${column}"`);
+
+      } else if (action === "ADD_ROW") {
+        // Grab the raw target dictionary built out by the AI payload configuration
+        const targetRowData = (pendingEdit as any)?.rowData;
+        if (targetRowData) {
+          updatedData.push(targetRowData);
+          Alert.alert("Record Appended", "A new row entry has been successfully pushed to the bottom of your table layout.");
+        } else {
+          throw new Error("No payload row dictionary structure found in reference memory context.");
+        }
+      } else if (action === "DROP_COLUMN") {
+        updatedData = data.map((row) => {
+          const { [column]: _, ...rest } = row;
+          return rest;
+        });
+        Alert.alert("Column Removed", `The column "${column}" has been removed from your dataset view.`);
+        }
 
       setData(updatedData);
 
@@ -261,7 +342,6 @@ const CleaningScreen = () => {
       Alert.alert("Execution Error", "Could not complete the data modification step.");
     }
   };
-
   const handleConfirmEdit = () => {
     if (!pendingEdit) return;
     setHistory((prev) => [...prev, [...data]]);
@@ -368,47 +448,85 @@ const CleaningScreen = () => {
           
           setMessages((prev) => [...prev, { role: 'model', parts: [{ text: finalAnswer }] }]);
         } else if (parsed.action === "EDIT") {
+          // 1. Save all incoming payload attributes including rowData
           setPendingEdit({
             editType: parsed.editType,
-            column: parsed.column,
-            filter: parsed.filter,
-            logic: parsed.logic
-          });
+            column: parsed.column || '',
+            filter: parsed.filter || '',
+            logic: parsed.logic || '',
+            rowData: parsed.rowData || null
+          } as any);
 
-          const filterFn = parsed.filter ? new Function('row', `return ${parsed.filter}`) : () => true;
-          const sampleAffected: any[] = [];
-          
-          for (const row of data) {
-            if (filterFn(row)) {
-              sampleAffected.push(row);
-              if (sampleAffected.length >= 3) break;
-            }
-          }
+          let generatedPreviews: any[] = [];
 
-          const generatedPreviews = sampleAffected.map((row) => {
-            let originalValue = String(row[parsed.column] || "");
-            let newValue = originalValue;
-
-            if (parsed.editType === "UPDATE") {
-              if (parsed.logic && parsed.logic.includes('row[')) {
+          // 2. Branch preview generation by operation type
+          if (parsed.editType === "ADD_ROW") {
+            // For inserting a row, show the incoming row data directly
+            generatedPreviews = [{
+              original: { "Status": "New Row Entry Template" },
+              modified: parsed.rowData || {}
+            }];
+          } else if (parsed.editType === "ADD_COLUMN") {
+            // For inserting a column, take up to 3 row samples to show the field generation
+            const samples = data.slice(0, 3);
+            generatedPreviews = samples.map((row) => {
+              let evaluatedValue = "";
+              if (parsed.logic && String(parsed.logic).includes('row[')) {
                 try {
                   const dynamicLogicFn = new Function('row', `return ${parsed.logic}`);
-                  newValue = String(dynamicLogicFn(row));
+                  evaluatedValue = String(dynamicLogicFn(row));
                 } catch (e) {
-                  newValue = originalValue;
+                  evaluatedValue = "Error calculating value";
                 }
               } else {
-                newValue = parsed.logic;
+                // Remove wrapper quotes from static values if present (e.g. "'No'" -> "No")
+                evaluatedValue = typeof parsed.logic === 'string' 
+                  ? parsed.logic.replace(/^'|'$/g, '') 
+                  : String(parsed.logic || "");
               }
-            } else if (parsed.editType === "DELETE") {
-              newValue = "❌ ROW WILL BE DELETED";
+
+              return {
+                original: row,
+                modified: { ...row, [parsed.column]: evaluatedValue }
+              };
+            });
+          } else {
+            // Standard fallback processing loop for legacy UPDATE and DELETE actions
+            const filterFn = parsed.filter ? new Function('row', `return ${parsed.filter}`) : () => true;
+            const sampleAffected: any[] = [];
+            
+            for (const row of data) {
+              if (filterFn(row)) {
+                sampleAffected.push(row);
+                if (sampleAffected.length >= 3) break;
+              }
             }
 
-            return {
-              original: row,
-              modified: { ...row, [parsed.column]: newValue }
-            };
-          });
+            generatedPreviews = sampleAffected.map((row) => {
+              let originalValue = String(row[parsed.column] || "");
+              let newValue = originalValue;
+
+              if (parsed.editType === "UPDATE") {
+                if (parsed.logic && String(parsed.logic).includes('row[')) {
+                  try {
+                    const dynamicLogicFn = new Function('row', `return ${parsed.logic}`);
+                    newValue = String(dynamicLogicFn(row));
+                  } catch (e) {
+                    newValue = originalValue;
+                  }
+                } else {
+                  newValue = parsed.logic;
+                }
+              } else if (parsed.editType === "DELETE") {
+                newValue = "❌ ROW WILL BE DELETED";
+              }
+
+              return {
+                original: row,
+                modified: { ...row, [parsed.column]: newValue }
+              };
+            });
+          }
 
           setPreviewRows(generatedPreviews);
           setIsPreviewVisible(true);
@@ -722,22 +840,24 @@ const CleaningScreen = () => {
                     SAMPLE ROW {index + 1}
                   </Text>
                   
-                  <View style={{ flexDirection: 'row', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: isDark ? '#4A5568' : '#E5E7EB' }}>
+                 <View style={{ flexDirection: 'row', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: isDark ? '#4A5568' : '#E5E7EB' }}>
                     <Text style={{ width: 65, fontSize: 12, fontWeight: 'bold', color: '#EF4444' }}>BEFORE:</Text>
-                    <Text style={{ flex: 1, fontSize: 12, color: isDark ? '#E5E7EB' : '#1F2937' }} numberOfLines={2}>
-                      {pendingEdit?.column 
-                        ? `${pendingEdit.column}: ${item.original[pendingEdit.column]}` 
-                        : Object.entries(item.original).map(([key, val]) => `${key}: ${val}`).join(' | ')
+                    <Text style={{ flex: 1, fontSize: 12, color: isDark ? '#E5E7EB' : '#1F2937' }} numberOfLines={pendingEdit?.editType === "ADD_ROW" ? 1 : 2}>
+                      {pendingEdit?.editType === "ADD_ROW" 
+                        ? "✨ (Empty Row Slot)" 
+                        : pendingEdit?.editType === "ADD_COLUMN"
+                        ? `(Column "${pendingEdit.column}" does not exist yet)`
+                        : `${pendingEdit?.column}: ${item.original[pendingEdit?.column || ''] || '(Blank)'}`
                       }
                     </Text>
                   </View>
 
                   <View style={{ flexDirection: 'row', paddingVertical: 6, marginTop: 4 }}>
                     <Text style={{ width: 65, fontSize: 12, fontWeight: 'bold', color: '#10B981' }}>AFTER:</Text>
-                    <Text style={{ flex: 1, fontSize: 12, color: isDark ? '#E5E7EB' : '#1F2937' }} numberOfLines={2}>
-                      {pendingEdit?.column 
-                        ? `${pendingEdit.column}: ${item.modified[pendingEdit.column]}` 
-                        : Object.entries(item.modified).map(([key, val]) => `${key}: ${val}`).join(' | ')
+                    <Text style={{ flex: 1, fontSize: 12, color: isDark ? '#E5E7EB' : '#1F2937' }} numberOfLines={4}>
+                      {pendingEdit?.editType === "ADD_ROW"
+                        ? Object.entries(item.modified).filter(([_, v]) => v !== "").map(([k, v]) => `${k}: ${v}`).join(' | ')
+                        : `${pendingEdit?.column}: ${item.modified[pendingEdit?.column || ''] || '(Blank)'}`
                       }
                     </Text>
                   </View>
