@@ -126,46 +126,123 @@ const CleaningScreen = () => {
 
   // AUTOMATED SYNC AND AUTO-SAVE CONTROLLER
   const saveDataLocally = async (currentData: any[]) => {
+   
     if (!fileName || typeof fileName !== 'string') return;
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+
+    if (!user) return;
+    const cleanFileName = fileName.includes('-')
+  ? fileName.split('-').slice(1).join('-')
+  : fileName;
+
+const { data: existingDataset } = await supabase
+  .from('recent_datasets')
+  .select('id')
+  .eq('user_id', user.id)
+  .eq('file_name', cleanFileName)
+  .maybeSingle();
+
+if (existingDataset) {
+  const { error } = await supabase
+    .from('recent_datasets')
+    .update({
+      row_count: currentData.length,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', existingDataset.id);
+
+  if (error) {
+    console.log("Recent dataset update error:", error);
+  } 
+  // else {
+  //   console.log("Recent dataset updated successfully");
+  // }
+} else {
+  const { error } = await supabase
+    .from('recent_datasets')
+    .insert({
+      user_id: user.id,
+      file_name: cleanFileName,
+      cloud_name: fileName,
+      row_count: currentData.length
+    });
+
+  if (error) {
+    console.log("Recent dataset insert error:", error);
+  } 
+  // else {
+  //   console.log("Recent dataset inserted successfully");
+  // }
+}
+
+  
       // 1. Save row data snapshot locally
       await AsyncStorage.setItem(`bubble_rows_${fileName}`, JSON.stringify(currentData));
 
       // 2. Refresh or CREATE row count tracking registry in main dashboard list view
-      const registryStr = await AsyncStorage.getItem('bubble_recent_datasets');
-      let list: any[] = registryStr ? JSON.parse(registryStr) : [];
+      // const registryStr = await AsyncStorage.getItem('bubble_recent_datasets');
+      // let list: any[] = registryStr ? JSON.parse(registryStr) : [];
       
-      const itemExists = list.some((item) => item.cloudName === fileName);
+      // const itemExists = list.some((item) => item.cloudName === fileName);
 
-      if (itemExists) {
-        // Update existing item metadata row count
-        list = list.map((item) => {
-          if (item.cloudName === fileName) {
-            return {
-              ...item,
-              rowCount: currentData.length,
-              lastModified: new Date().toLocaleDateString(undefined, {
-                month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-              })
-            };
-          }
-          return item;
-        });
-      } else {
-        // FALLBACK: Create a brand new history item entry if the list was empty or missing this file!
-        const newEntry = {
-          id: Date.now().toString(),
-          fileName: fileName.includes('-') ? fileName.split('-').slice(1).join('-') : fileName,
-          cloudName: fileName,
-          lastModified: new Date().toLocaleDateString(undefined, {
-            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
-          }),
-          rowCount: currentData.length
-        };
-        list = [newEntry, ...list];
-      }
+      // if (itemExists) {
+      //   // Update existing item metadata row count
+      //   list = list.map((item) => {
+      //     if (item.cloudName === fileName) {
+      //       return {
+      //         ...item,
+      //         rowCount: currentData.length,
+      //         lastModified: new Date().toLocaleDateString(undefined, {
+      //           month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+      //         })
+      //       };
+      //     }
+      //     return item;
+      //   });
+      // } else {
+      //   // FALLBACK: Create a brand new history item entry if the list was empty or missing this file!
+      //   const newEntry = {
+      //     id: Date.now().toString(),
+      //     fileName: fileName.includes('-') ? fileName.split('-').slice(1).join('-') : fileName,
+      //     cloudName: fileName,
+      //     lastModified: new Date().toLocaleDateString(undefined, {
+      //       month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+      //     }),
+      //     rowCount: currentData.length
+      //   };
+      //   list = [newEntry, ...list];
+      // }
 
-      await AsyncStorage.setItem('bubble_recent_datasets', JSON.stringify(list));
+      // await AsyncStorage.setItem('bubble_recent_datasets', JSON.stringify(list));
+
+      const headers = currentData.length > 0
+  ? Object.keys(currentData[0])
+  : [];
+
+if (headers.length > 0) {
+  const csvString = [
+    headers.join(','),
+    ...currentData.map(row =>
+      headers
+        .map(header =>
+          `"${String(row[header] ?? '').replace(/"/g, '""')}"`
+        )
+        .join(',')
+    )
+  ].join('\n');
+
+  const { error: uploadError } = await supabase.storage
+    .from('datasets')
+    .upload(fileName, csvString, {
+      contentType: 'text/csv',
+      upsert: true
+    });
+
+  if (uploadError) {
+    console.error("Auto cloud save failed:", uploadError);
+  }
+}
     } catch (e) {
       console.error("AutoSave Error:", e);
     }
@@ -240,7 +317,10 @@ const CleaningScreen = () => {
           const values = line.split(',');
           let obj: any = {};
           headers.forEach((header, index) => {
-            obj[header] = values[index]?.trim() || "";
+            // obj[header] = values[index]?.trim() || "";
+            obj[header] = (values[index] || "")
+            .trim()
+            .replace(/^"|"$/g, "");
           });
           return obj;
         });
@@ -374,27 +454,94 @@ const CleaningScreen = () => {
   };
 
   const callGeminiAI = async (userPrompt: string) => {
-    try {
-      const dataSnapshot = getDataSummary(); 
-      const API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
-      if (!API_KEY) return "Error: API Key missing.";
+  try {
+    const dataSnapshot = getDataSummary();
 
-      const API_URL = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
-      const fullPrompt = `${BUBBLE_AI_SYSTEM_PROMPT}\n\nCONTEXT:\n${dataSnapshot}\n\nCOMMAND:\n${userPrompt}`;
+    const API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
 
-      const response = await fetch(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: fullPrompt }] }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 1000 }
-        }),
-      });
+    console.log("========== GEMINI DEBUG ==========");
+    console.log("Platform:", Platform.OS);
+    console.log("API KEY EXISTS:", !!API_KEY);
 
-      const result = await response.json();
-      return result.candidates?.[0]?.content?.parts?.[0]?.text || "Unexpected response format.";
-    } catch (err) { return "Trouble connecting to Gemini engine."; }
-  };
+    if (!API_KEY) {
+      console.log("❌ API KEY MISSING");
+      return "Error: API Key missing.";
+    }
+
+    const API_URL =
+      `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
+
+    const fullPrompt = `
+${BUBBLE_AI_SYSTEM_PROMPT}
+
+CONTEXT:
+${dataSnapshot}
+
+COMMAND:
+${userPrompt}
+`;
+
+    console.log("🚀 Sending request to Gemini...");
+
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                text: fullPrompt,
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 1000,
+        },
+      }),
+    });
+
+    console.log("📡 Status:", response.status);
+
+    const responseText = await response.text();
+
+    console.log("📥 RAW RESPONSE:");
+    console.log(responseText);
+
+    if (!response.ok) {
+      return `Gemini Error (${response.status})`;
+    }
+
+    const result = JSON.parse(responseText);
+
+    console.log("✅ Parsed Result:");
+    console.log(JSON.stringify(result, null, 2));
+
+    const aiText =
+      result?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!aiText) {
+      console.log("❌ No text found in Gemini response");
+      return "Unexpected response format.";
+    }
+
+    console.log("🤖 AI RESPONSE:");
+    console.log(aiText);
+
+    return aiText;
+
+  } catch (err: any) {
+    console.log("🔥 GEMINI CRASH:");
+    console.log(err);
+    console.log(err?.message);
+
+    return `Trouble connecting to Gemini engine: ${err?.message || "Unknown error"}`;
+  }
+};
 
   const handleSendMessage = async () => {
     if (!message.trim()) return;

@@ -11,7 +11,6 @@ import type { DocumentPickerAsset } from 'expo-document-picker';
 import { useRouter, useNavigation} from 'expo-router';
 import * as FileSystem from 'expo-file-system/legacy'; 
 import { decode } from 'base64-arraybuffer';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Define structure for a recent activity entry
 interface RecentDataset {
@@ -29,6 +28,7 @@ const HomeScreen = () => {
   const [selectedFile, setSelectedFile] = useState<DocumentPickerAsset | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [recentFiles, setRecentFiles] = useState<RecentDataset[]>([]);
+  const [isLoadingRecent, setIsLoadingRecent] = useState(true);
   const router = useRouter();
   const navigation = useNavigation();
 
@@ -44,7 +44,7 @@ const HomeScreen = () => {
     
     // Initial fetch on boot
     loadRecentFiles();
-
+  
     // Trigger auto-refresh whenever you tap the back arrow and hit this screen
     const unsubscribe = navigation.addListener('focus', () => {
       loadRecentFiles();
@@ -54,19 +54,71 @@ const HomeScreen = () => {
   }, [navigation]);
 
   const loadRecentFiles = async () => {
-    try {
-      const savedList = await AsyncStorage.getItem('bubble_recent_datasets');
-      if (savedList) {
-        setRecentFiles(JSON.parse(savedList));
-      }
-    } catch (err) {
-      console.error("Error loading recent list:", err);
-    }
-  };
+    setIsLoadingRecent(true);
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-  };
+    if (!user) return;
+
+    const { data, error } = await supabase
+      .from('recent_datasets')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('updated_at', { ascending: false });
+
+    if (error) {
+      console.error("Supabase fetch error:", error);
+      return;
+    }
+
+    setRecentFiles(
+  (data || []).map((item: any) => ({
+    id: item.id,
+    fileName: item.file_name,
+    cloudName: item.cloud_name,
+    lastModified: new Date(item.updated_at).toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    }),
+    rowCount: item.row_count || 0
+  }))
+);
+
+    // console.log("Recent datasets:", data);
+
+  } catch (err) {
+    console.error("Error loading recent list:", err);
+  } 
+  finally {
+    setIsLoadingRecent(false);
+  }
+};
+
+
+
+  // const handleLogout = async () => {
+  //   await supabase.auth.signOut();
+  // };
+
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+const handleLogout = async () => {
+  if (isLoggingOut) return;
+
+  try {
+    setIsLoggingOut(true);
+
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      Alert.alert("Logout Failed", error.message);
+    }
+  } finally {
+    setIsLoggingOut(false);
+  }
+};
 
   const pickDocument = async () => {
     try {
@@ -95,9 +147,82 @@ const HomeScreen = () => {
       });
 
       const arrayBuffer = decode(base64);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        Alert.alert("Error", "You must be logged in.");
+        return;
+      }
+      const { data: existingFile, error: lookupError } = await supabase
+        .from('recent_datasets')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('file_name', selectedFile.name)
+        .maybeSingle();
+
+        if (lookupError) {
+          console.error("Supabase lookup error:", lookupError);
+        }
+
+        if (existingFile) {
+  Alert.alert(
+    "Dataset Already Exists",
+    `"${selectedFile.name}" already exists.\n\nWhat would you like to do?`,
+    [
+      {
+        text: "Open Existing",
+        onPress: () => {
+          router.push({
+            pathname: '/cleanscreen',
+            params: {
+              fileName: existingFile.cloud_name,
+              isRestoration: 'true'
+            }
+          } as any);
+        }
+      },
+      {
+        text: "Start Fresh",
+        onPress: async () => {
+          const base64 = await FileSystem.readAsStringAsync(selectedFile.uri, {
+            encoding: 'base64',
+          });
+
+          const arrayBuffer = decode(base64);
+
+          const { error: storageError } = await supabase.storage
+            .from('datasets')
+            .upload(existingFile.cloud_name, arrayBuffer, {
+              contentType: 'text/csv',
+              upsert: true
+            });
+
+          if (storageError) {
+            Alert.alert("Error", storageError.message);
+            return;
+          }
+
+          router.push({
+            pathname: '/cleanscreen',
+            params: {
+              fileName: existingFile.cloud_name,
+              isRestoration: 'false'
+            }
+          } as any);
+        }
+      },
+      {
+        text: "Cancel",
+        style: "cancel"
+      }
+    ]
+  );
+
+  return;
+}
+
       const uniqueCloudName = `${Date.now()}-${selectedFile.name.replace(/\s+/g, '_')}`;
 
-      const { data, error } = await supabase.storage
+      const { error } = await supabase.storage
         .from('datasets')
         .upload(uniqueCloudName, arrayBuffer, {
           contentType: 'text/csv',
@@ -107,23 +232,23 @@ const HomeScreen = () => {
       if (error) throw error;
 
       // Create a brand new activity profile card block entry
-      const newEntry: RecentDataset = {
-        id: Date.now().toString(),
-        fileName: selectedFile.name,
-        cloudName: uniqueCloudName,
-        lastModified: new Date().toLocaleDateString(undefined, {
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit'
-        }),
-        rowCount: 0 // Will be dynamically updated as soon as clean screen parses it
-      };
+      // const newEntry: RecentDataset = {
+      //   id: Date.now().toString(),
+      //   fileName: selectedFile.name,
+      //   cloudName: uniqueCloudName,
+      //   lastModified: new Date().toLocaleDateString(undefined, {
+      //     month: 'short',
+      //     day: 'numeric',
+      //     hour: '2-digit',
+      //     minute: '2-digit'
+      //   }),
+      //   rowCount: 0 // Will be dynamically updated as soon as clean screen parses it
+      // };
 
-      const updatedList = [newEntry, ...recentFiles.filter(f => f.fileName !== newEntry.fileName)];
-      await AsyncStorage.setItem('bubble_recent_datasets', JSON.stringify(updatedList));
-      setRecentFiles(updatedList);
-      setSelectedFile(null);
+      // const updatedList = [newEntry, ...recentFiles.filter(f => f.fileName !== newEntry.fileName)];
+      // await AsyncStorage.setItem('bubble_recent_datasets', JSON.stringify(updatedList));
+      // setRecentFiles(updatedList);
+      // setSelectedFile(null);
 
       router.push({
         pathname: '/cleanscreen',
@@ -148,15 +273,44 @@ const HomeScreen = () => {
 
   // 4. NEW: Delete a specific file entry from local recent activity
   const deleteRecentFile = async (idToDelete: string) => {
-    try {
-      const updatedList = recentFiles.filter(item => item.id !== idToDelete);
-      setRecentFiles(updatedList);
-      await AsyncStorage.setItem('bubble_recent_datasets', JSON.stringify(updatedList));
-    } catch (err) {
-      console.error("Error removing file card entry:", err);
-      Alert.alert("Error", "Could not remove history pointer.");
+  try {
+    const fileToDelete = recentFiles.find(
+      item => item.id === idToDelete
+    );
+
+    if (!fileToDelete) return;
+
+    // Delete database row
+    const { error: dbError } = await supabase
+      .from('recent_datasets')
+      .delete()
+      .eq('id', idToDelete);
+
+    if (dbError) {
+      Alert.alert("Error", dbError.message);
+      return;
     }
-  };
+
+    // Delete file from storage
+    const { error: storageError } = await supabase.storage
+      .from('datasets')
+      .remove([fileToDelete.cloudName]);
+
+    if (storageError) {
+      console.log("Storage delete warning:", storageError);
+    }
+
+    // Refresh UI
+    setRecentFiles(prev =>
+      prev.filter(item => item.id !== idToDelete)
+    );
+
+    Alert.alert("Deleted", "Dataset removed successfully.");
+  } catch (err) {
+    console.error("Delete error:", err);
+    Alert.alert("Error", "Could not delete dataset.");
+  }
+};
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
@@ -182,9 +336,16 @@ const HomeScreen = () => {
 
               <TouchableOpacity 
                 onPress={handleLogout}
+                disabled={isLoggingOut}
+
                 style={[styles.logoutBtn, { backgroundColor: colors.surface, borderColor: colors.border }]}
               >
-                <MaterialCommunityIcons name="logout" size={22} color={colors.error} />
+                {isLoggingOut ? (
+                  <ActivityIndicator size="small" color={colors.error} />
+                ) : (
+                  <MaterialCommunityIcons name="logout" size={22} color={colors.error} />
+                )}
+                
               </TouchableOpacity>
             </View>
 
@@ -259,7 +420,20 @@ const HomeScreen = () => {
             </View>
 
             {/* DYNAMIC LIST ENGINE */}
-            {recentFiles.length > 0 ? (
+            {isLoadingRecent ? (
+  <View style={{ paddingVertical: 30, alignItems: 'center' }}>
+    <ActivityIndicator size="small" color={colors.accent} />
+    <Text
+      style={{
+        color: colors.textMuted,
+        marginTop: 8,
+        fontSize: 13
+      }}
+    >
+      Loading recent activity...
+    </Text>
+  </View>
+) : recentFiles.length > 0 ? (
               recentFiles.map((file) => (
                 <View
                   key={file.id}

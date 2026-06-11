@@ -22,6 +22,19 @@ import { FontAwesome6, AntDesign } from '@expo/vector-icons';
 import { Alert } from 'react-native';
 import { supabase } from '../../supabaseClient';
 
+import Constants, { ExecutionEnvironment } from 'expo-constants';
+
+const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+
+const SHOW_GOOGLE_BUTTON = !isExpoGo;
+
+
+
+
+
+
+
+
 const LoginScreen = () => {
   // ─── Theme ───────────────────────────────────────────────
   const { colors, spacing, radius, fontSize } = useAppTheme();
@@ -93,6 +106,10 @@ const handleLogin  = async () => {
     console.log('Logged in as:', data.user.email);
   }
 };
+
+
+// ─── Google Sign-In Handler ───────────────────────────────────────
+
 
 
 
@@ -297,16 +314,20 @@ const handleLogin  = async () => {
 
         {/* ── Social Login Buttons ── */}
         {[
-          { label: 'Continue with Google', 
-            icon: <AntDesign name="google" size={20}color="#4285F4" />, 
-            key: 'google'},
+          {
+            label: 'Continue with Google',
+            icon: <AntDesign name="google" size={20} color="#4285F4" />,
+            key: 'google',
+            hidden: !SHOW_GOOGLE_BUTTON
+          },
+          
           { label: 'Continue with Apple',
             icon: <FontAwesome6 name="apple" size={20} color={colors.textPrimary} />,
             key: 'apple' },
           { label: 'Continue with X',
             icon: <FontAwesome6 name="x-twitter" size={20} color={colors.textPrimary} />,
             key: 'x' },
-        ].map((item, index) => (
+        ].filter(item => !item.hidden).map((item, index) =>(
           <MotiView
             key={item.key}
             from={{ opacity: 0, translateY: 20 }}
