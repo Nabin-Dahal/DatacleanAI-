@@ -21,19 +21,19 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FontAwesome6, AntDesign } from '@expo/vector-icons';
 import { Alert } from 'react-native';
 import { supabase } from '../../supabaseClient';
-
 import Constants, { ExecutionEnvironment } from 'expo-constants';
+import { GoogleSignin } from '@react-native-google-signin/google-signin';
+
+GoogleSignin.configure({
+  webClientId:
+    '127471325434-9j3pl757i19a705earmlvncvirkct3f4.apps.googleusercontent.com',
+  offlineAccess: true,
+});
+
 
 const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
 
 const SHOW_GOOGLE_BUTTON = !isExpoGo;
-
-
-
-
-
-
-
 
 const LoginScreen = () => {
   // ─── Theme ───────────────────────────────────────────────
@@ -109,7 +109,42 @@ const handleLogin  = async () => {
 
 
 // ─── Google Sign-In Handler ───────────────────────────────────────
+const handleGoogleSignIn = async () => {
+  try {
+    await GoogleSignin.hasPlayServices();
 
+    const response = await GoogleSignin.signIn();
+
+    console.log('Google Response:', JSON.stringify(response, null, 2));
+
+    const idToken = response.data?.idToken;
+
+    if (!idToken) {
+      Alert.alert('Google Login Error', 'No ID Token received');
+      return;
+    }
+
+    const { data, error } = await supabase.auth.signInWithIdToken({
+      provider: 'google',
+      token: idToken,
+    });
+
+    if (error) {
+      Alert.alert('Google Login Error', error.message);
+      return;
+    }
+
+    if (data.user) {
+      router.replace('/home');
+    }
+  } catch (error: any) {
+    console.log('Google Error:', error);
+    Alert.alert(
+      'Google Sign-In Error',
+      error?.message || 'Unknown error'
+    );
+  }
+};
 
 
 
@@ -336,7 +371,12 @@ const handleLogin  = async () => {
             style={{ width: '100%' }}
           >
             <TouchableOpacity
-              style={[
+  onPress={
+    item.key === 'google'
+      ? handleGoogleSignIn
+      : undefined
+  }
+  style={[
                 styles.socialButton,
                 {
                   borderColor: colors.border,
